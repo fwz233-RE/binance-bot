@@ -16,6 +16,7 @@
 - **Advanced Indicators** — RSI, MACD, DEMA, Bollinger Bands, ADX, ATR, and volume confirmation
 - **Full OHLCV Analysis** — Uses complete candlestick data instead of close-only prices
 - **Auto-Notional Adjustment** — Automatically raises order quantity to meet Binance's minimum notional filter
+- **Detailed Order Reasoning** — Orders Log shows which entry/exit conditions were met (✓/✗) before each trade
 - **File Logging** — All trade events and errors are written to `binance-bot.log` alongside the TUI display
 
 ## Download
@@ -380,9 +381,17 @@ ai:
 All log levels (orders, info, errors) are automatically written to `binance-bot.log` in the working directory, alongside the TUI display. Color tags are stripped before writing. The file is opened in append mode so logs accumulate across sessions.
 
 ```
+2026-04-07 12:30:00 [INFO]  Scalp entry: score 5/6 (min 5)
+2026-04-07 12:30:00 [INFO]    ✓ RSI 28.4 < 30 (upper limit)
+2026-04-07 12:30:00 [INFO]    ✓ MACD above signal (0.000012 > 0.000008)
+2026-04-07 12:30:00 [INFO]    ✓ Tendency up = up
+2026-04-07 12:30:00 [INFO]    ✓ Closer to lower BB (lower=0.0023, upper=0.0089)
+2026-04-07 12:30:00 [INFO]    ✓ ADX strong (32.1 > 20)
+2026-04-07 12:30:00 [INFO]    ✗ Volume confirmed (4200 > avg 5100)
 2026-04-07 12:30:01 [ORDER] BUY 50.000000 PEPE @ 0.00001234 USDT = 0.000617 USDT
 2026-04-07 12:30:05 [INFO]  BUY order filled!
-2026-04-07 12:30:06 [ERROR] RSI prices: context deadline exceeded
+2026-04-07 12:35:10 [INFO]  Take-profit triggered: price 0.00001250 >= TP 0.00001246 (buy 0.00001234, TP 1.00%, P&L +1.30%)
+2026-04-07 12:35:10 [INFO]    ✓ RSI exit ok (RSI declining=true, scalp bypass=false)
 ```
 
 ### Auto-Notional Adjustment

@@ -119,6 +119,28 @@ func updateDashAI(dash *tui.Dashboard, cr *ai.ConsensusResult) {
 	dash.UpdateAI(data)
 }
 
+// entryCondition represents a single scored entry condition with its name and result.
+type entryCondition struct {
+	Name string
+	Met  bool
+}
+
+// logEntryConditions logs detailed entry condition breakdown to the orders panel.
+func logEntryConditions(dash *tui.Dashboard, mode string, conditions []entryCondition, score, total, minScore int, scalp bool) {
+	label := "Entry"
+	if scalp {
+		label = "Scalp entry"
+	}
+	dash.LogInfo(fmt.Sprintf("[yellow]%s: score %d/%d (min %d)[-]", label, score, total, minScore))
+	for _, c := range conditions {
+		tag := "[green]✓[-]"
+		if !c.Met {
+			tag = "[red]✗[-]"
+		}
+		dash.LogInfo(fmt.Sprintf("  %s %s", tag, c.Name))
+	}
+}
+
 // waitOrderFilled polls until an order is filled, logging the result.
 func waitOrderFilled(dash *tui.Dashboard, ticker string, orderId int64, filledMsg string, interval time.Duration) {
 	for {

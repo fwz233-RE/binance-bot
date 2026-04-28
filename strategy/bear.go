@@ -247,39 +247,92 @@ func bearTradeLoop(
 			var shouldSell bool
 			if cfg.ScalpMode.Enabled {
 				score := 0
-				if rsi[len(rsi)-1] > float64(cfg.Indicators.Rsi.LowerLimit) {
+				var conditions []entryCondition
+
+				rsiOk := rsi[len(rsi)-1] > float64(cfg.Indicators.Rsi.LowerLimit)
+				if rsiOk {
 					score++
 				}
-				if macdLine[len(macdLine)-1] < signalLine[len(signalLine)-1] {
-					score++ // MACD below signal (not requiring exact crossover)
-				}
-				if tendency == "down" {
+				conditions = append(conditions, entryCondition{
+					Name: fmt.Sprintf("RSI %.1f > %d (lower limit)", rsi[len(rsi)-1], cfg.Indicators.Rsi.LowerLimit),
+					Met:  rsiOk,
+				})
+
+				macdOk := macdLine[len(macdLine)-1] < signalLine[len(signalLine)-1]
+				if macdOk {
 					score++
 				}
-				if distanceToUpper < distanceToLower {
+				conditions = append(conditions, entryCondition{
+					Name: fmt.Sprintf("MACD below signal (%.6f < %.6f)", macdLine[len(macdLine)-1], signalLine[len(signalLine)-1]),
+					Met:  macdOk,
+				})
+
+				tendOk := tendency == "down"
+				if tendOk {
 					score++
 				}
+				conditions = append(conditions, entryCondition{
+					Name: fmt.Sprintf("Tendency %s = down", tendency),
+					Met:  tendOk,
+				})
+
+				bbOk := distanceToUpper < distanceToLower
+				if bbOk {
+					score++
+				}
+				conditions = append(conditions, entryCondition{
+					Name: fmt.Sprintf("Closer to upper BB (upper=%.4f, lower=%.4f)", distanceToUpper, distanceToLower),
+					Met:  bbOk,
+				})
+
 				if adxStrong {
 					score++
 				}
+				conditions = append(conditions, entryCondition{
+					Name: fmt.Sprintf("ADX strong (%.1f > %d)", adxVal, cfg.Indicators.Adx.Threshold),
+					Met:  adxStrong,
+				})
+
 				if volumeConfirmed {
 					score++
 				}
+				conditions = append(conditions, entryCondition{
+					Name: fmt.Sprintf("Volume confirmed (%.0f > avg %.0f)", currentVolume, avgVolume),
+					Met:  volumeConfirmed,
+				})
+
 				minScore := cfg.ScalpMode.MinScore
 				if minScore <= 0 {
 					minScore = 3
 				}
 				shouldSell = score >= minScore && aiApproved
 				if shouldSell {
-					dash.LogInfo(fmt.Sprintf("[yellow]Scalp entry: score %d/%d (min %d)[-]", score, 6, minScore))
+					logEntryConditions(dash, "BEAR", conditions, score, 6, minScore, true)
+					if !aiApproved {
+						dash.LogInfo("  [red]✗[-] AI approval")
+					}
 				}
 			} else {
-				shouldSell = rsi[len(rsi)-1] > float64(cfg.Indicators.Rsi.LowerLimit) &&
-					macdLine[len(macdLine)-2] >= signalLine[len(signalLine)-2] &&
-					macdLine[len(macdLine)-1] < signalLine[len(signalLine)-1] &&
-					tendency == "down" &&
-					distanceToUpper < distanceToLower &&
+				rsiOk := rsi[len(rsi)-1] > float64(cfg.Indicators.Rsi.LowerLimit)
+				macdCrossOk := macdLine[len(macdLine)-2] >= signalLine[len(signalLine)-2] &&
+					macdLine[len(macdLine)-1] < signalLine[len(signalLine)-1]
+				tendOk := tendency == "down"
+				bbOk := distanceToUpper < distanceToLower
+
+				shouldSell = rsiOk && macdCrossOk && tendOk && bbOk &&
 					adxStrong && volumeConfirmed && aiApproved
+
+				if shouldSell {
+					conditions := []entryCondition{
+						{Name: fmt.Sprintf("RSI %.1f > %d", rsi[len(rsi)-1], cfg.Indicators.Rsi.LowerLimit), Met: rsiOk},
+						{Name: fmt.Sprintf("MACD bearish crossover (%.6f < %.6f)", macdLine[len(macdLine)-1], signalLine[len(signalLine)-1]), Met: macdCrossOk},
+						{Name: fmt.Sprintf("Tendency %s = down", tendency), Met: tendOk},
+						{Name: fmt.Sprintf("Closer to upper BB (upper=%.4f, lower=%.4f)", distanceToUpper, distanceToLower), Met: bbOk},
+						{Name: fmt.Sprintf("ADX strong (%.1f > %d)", adxVal, cfg.Indicators.Adx.Threshold), Met: adxStrong},
+						{Name: fmt.Sprintf("Volume confirmed (%.0f > avg %.0f)", currentVolume, avgVolume), Met: volumeConfirmed},
+					}
+					logEntryConditions(dash, "BEAR", conditions, 6, 6, 6, false)
+				}
 			}
 			if shouldSell {
 
@@ -356,6 +409,8 @@ func bearTradeLoop(
 					trailingStopPrice := lowestPrice * (1 + cfg.TrailingStop.TrailingPct/100)
 					if price >= trailingStopPrice {
 						dash.SetPhase("TRAILING STOP")
+						dash.LogInfo(fmt.Sprintf("[fuchsia]Trailing-stop triggered:[-] price %.*f >= trail %.*f (trough %.*f, activation %.*f, trail %.2f%%)",
+							roundPrice, price, roundPrice, trailingStopPrice, roundPrice, lowestPrice, roundPrice, activationPrice, cfg.TrailingStop.TrailingPct))
 						buyBackQty := indicator.RoundFloat(sellProceeds/price, roundAmount)
 						buy, err := TradeMarketBuy(symbol, buyBackQty, price, roundPrice)
 						if err != nil {
@@ -395,6 +450,9 @@ func bearTradeLoop(
 			stopLossPrice := sellPrice * (1 + effectiveSL/100)
 			if price >= stopLossPrice {
 				dash.SetPhase("STOP LOSS")
+				pnlPct := (sellPrice - price) / sellPrice * 100
+				dash.LogInfo(fmt.Sprintf("[red]Stop-loss triggered:[-] price %.*f >= SL %.*f (sell %.*f, SL %.2f%%, P&L %+.2f%%)",
+					roundPrice, price, roundPrice, stopLossPrice, roundPrice, sellPrice, effectiveSL, pnlPct))
 				buyBackQty := indicator.RoundFloat(sellProceeds/price, roundAmount)
 				buy, err := TradeMarketBuy(symbol, buyBackQty, price, roundPrice)
 				if err != nil {
@@ -432,6 +490,13 @@ func bearTradeLoop(
 			rsiExitOk := rsiRising || (cfg.ScalpMode.Enabled && !cfg.ScalpMode.RequireRSIExit)
 			if price <= profitPrice && rsiExitOk && aiBuyApproved {
 				dash.SetPhase("TAKE PROFIT")
+				pnlPct := (sellPrice - price) / sellPrice * 100
+				dash.LogInfo(fmt.Sprintf("[green]Take-profit triggered:[-] price %.*f <= TP %.*f (sell %.*f, TP %.2f%%, P&L %+.2f%%)",
+					roundPrice, price, roundPrice, profitPrice, roundPrice, sellPrice, takeProfit, pnlPct))
+				dash.LogInfo(fmt.Sprintf("  [green]✓[-] RSI exit ok (RSI rising=%v, scalp bypass=%v)", rsiRising, cfg.ScalpMode.Enabled && !cfg.ScalpMode.RequireRSIExit))
+				if aiOrch != nil {
+					dash.LogInfo(fmt.Sprintf("  [green]✓[-] AI buy-back approved"))
+				}
 				buyBackQty := indicator.RoundFloat(sellProceeds/price, roundAmount)
 				buy, err := TradeBuy(symbol, buyBackQty, price, buyFactor, roundPrice)
 				if err != nil {
