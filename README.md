@@ -10,7 +10,7 @@
 - **Bear Trade** — Sell-high-buy-low strategy for downtrending markets
 - **Scalp Mode** — High-frequency micro-trading using a scoring-based entry system; no longer requires all signals simultaneously
 - **Top Gainers Monitor** — Real-time TUI dashboard of the top 24h movers on Binance
-- **AI Multi-Agent System** — Concurrent analysis from OpenAI, DeepSeek, and Claude with weighted consensus
+- **AI Multi-Agent System** — Concurrent analysis from OpenAI, DeepSeek, and Claude with weighted consensus; acts as a mandatory approval gate for trade entries and take-profit exits
 - **Sentiment Analysis** — Real-time news headlines and Fear & Greed Index integrated into AI decisions
 - **Trailing Stop-Loss** — Dynamically locks in profits as price moves favorably
 - **Advanced Indicators** — RSI, MACD, DEMA, Bollinger Bands, ADX, ATR, and volume confirmation
@@ -501,14 +501,12 @@ Sentiment Data ────────┘       │         │         │
                           OpenAI    DeepSeek    Claude
 ```
 
-- **Entry signals**: Technical conditions must pass first, then AI must approve (or at least HOLD).
+- **Entry signals**: Technical conditions must pass first, then AI must approve (or at least HOLD). If AI returns a contradicting signal with ≥50% confidence, the trade is **blocked** regardless of how many technical indicators are favorable.
 - **Stop-loss / trailing-stop exits**: Execute **immediately** without waiting for AI — safety first.
 - **Take-profit exits**: Require AI confirmation to avoid exiting too early in strong trends.
 
----
-
-> [!WARNING]
-> Always test the bot in a safe environment (e.g., testnet or small amounts) before live trading. Ensure you understand the risks and implications of using automated trading strategies.
+> [!NOTE]
+> The AI consensus is considered alongside — not instead of — the technical indicators. Both must agree for a trade to execute. This dual-confirmation approach reduces false signals while preserving protective exits.
 
 ---
 
@@ -546,6 +544,11 @@ To build the `binance-bot` from the source code, ensure you have the following p
    ```
 
 If the build succeeds, you should see the general help menu displayed, indicating that the bot has been built successfully.
+
+---
+
+> [!WARNING]
+> Always test the bot in a safe environment (e.g., testnet or small amounts) before live trading. Ensure you understand the risks and implications of using automated trading strategies.
 
 ## References
 
