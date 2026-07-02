@@ -241,8 +241,10 @@ round-trip fees + buffer, time-stop and break-even close at net-zero or
 better, and the dashboard shows both gross and net P&L. When `ai.enabled` is
 set, the same AI multi-agent consensus used by the spot strategies gates
 futures entries (long = BUY approval, short = SELL approval) and confirms
-take-profit exits. Leverage and margin type come from the `futures` config
-section. **Orders go to the live exchange and trade real funds.**
+take-profit exits. The MACD-peak early exit locks gains on histogram
+rollover once fees are covered. Leverage and margin type come from the
+`futures` config section. **Orders go to the live exchange and trade real
+funds.**
 
 ```bash
 binance-bot -f binance-config.yml futures-trade -t BTC/USDT -a 0.002 -sl 1.0 -tp 1.5 -rp 2 -ra 3 -o 0 -d auto
@@ -279,7 +281,7 @@ binance-bot -f binance-config.yml futures-trade -t BTC/USDT -a 0.002 -sl 1.0 -tp
      binance-bot [global options] command <command args>
 
   VERSION:
-     v0.17.0
+     v0.18.0
 
   AUTHOR:
      Walter Ferreira <wferreirauy@gmail.com>

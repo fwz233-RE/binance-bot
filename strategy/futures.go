@@ -250,9 +250,20 @@ func futuresTradeLoop(
 				}
 			}
 
+			// Full indicator panel, matching the spot dashboards.
+			dema := indicator.CalculateDEMA(ohlcv.Closes, cfg.Indicators.Dema.Length)
+			var currentDema float64
+			if len(dema) > 0 {
+				currentDema = dema[len(dema)-1]
+			}
+			macdCross := "BEARISH"
+			if macdLine[len(macdLine)-1] > signalLine[len(signalLine)-1] {
+				macdCross = "BULLISH"
+			}
 			dash.UpdateIndicators(&tui.IndicatorData{
 				RSI: rsi[len(rsi)-1], RSIUpperLimit: cfg.Indicators.Rsi.UpperLimit, RSILowerLimit: cfg.Indicators.Rsi.LowerLimit,
-				MACDLine: macdLine[len(macdLine)-1], SignalLine: signalLine[len(signalLine)-1],
+				MACDLine: macdLine[len(macdLine)-1], SignalLine: signalLine[len(signalLine)-1], MACDCross: macdCross,
+				DEMA: currentDema, UpperBand: bb.UpperBand[len(bb.UpperBand)-1], LowerBand: bb.LowerBand[len(bb.LowerBand)-1],
 				Tendency: tendency, ADX: adxVal, ADXThreshold: cfg.Indicators.Adx.Threshold,
 				Volume: currentVolume, AvgVolume: avgVolume,
 				ATR: atrVal, Price: price,
@@ -262,11 +273,6 @@ func futuresTradeLoop(
 			// Long entries need BUY approval, short entries need SELL approval.
 			var aiApproved = true
 			if aiOrch != nil {
-				dema := indicator.CalculateDEMA(ohlcv.Closes, cfg.Indicators.Dema.Length)
-				var currentDema float64
-				if len(dema) > 0 {
-					currentDema = dema[len(dema)-1]
-				}
 				snapshot := &ai.TechnicalSnapshot{
 					Symbol: symbol, Price: price, PrevPrice: prevPrice,
 					RSI: rsi[len(rsi)-1], MACDLine: macdLine[len(macdLine)-1], SignalLine: signalLine[len(signalLine)-1],
@@ -462,6 +468,7 @@ func futuresExitLoop(
 			}
 		}
 		rsi := indicator.CalculateSmoothedRSI(ohlcv.Closes, cfg.Indicators.Rsi.Length, cfg.Indicators.Rsi.SmoothLength)
+		macdLine, signalLine := indicator.CalculateMACD(ohlcv.Closes, cfg.Indicators.Macd.FastLength, cfg.Indicators.Macd.SlowLength, cfg.Indicators.Macd.SignalLength)
 		if len(rsi) > 0 {
 			dash.UpdateIndicators(&tui.IndicatorData{
 				RSI: rsi[len(rsi)-1], RSIUpperLimit: cfg.Indicators.Rsi.UpperLimit, RSILowerLimit: cfg.Indicators.Rsi.LowerLimit,
@@ -537,6 +544,17 @@ func futuresExitLoop(
 			closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[yellow::b]TIME-STOP[-]")
 			recordTrade(cfg, storage.TradeRecord{Symbol: ticker, Side: closeSide, Quantity: qty, Price: price, Reason: "futures-timestop"})
 			return "ts"
+		}
+
+		// MACD-peak exit: lock gains when histogram rolls over, but only once
+		// gross P&L covers the fees — unlike spot, never converts a micro-win
+		// into a net loss.
+		if pnl >= feeRoundTrip && shouldMACDPeakExit(cfg, macdLine, signalLine, isLong, pnl) {
+			dash.SetPhase("MACD PEAK EXIT")
+			dash.LogInfo(fmt.Sprintf("[fuchsia]MACD-peak exit:[-] histogram rolling over, P&L %+.2f%% gross / %+.2f%% net", pnl, pnl-feeRoundTrip))
+			closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[fuchsia::b]MACD-PEAK[-]")
+			recordTrade(cfg, storage.TradeRecord{Symbol: ticker, Side: closeSide, Quantity: qty, Price: price, Reason: "futures-macdpeak"})
+			return "tp"
 		}
 
 		// Take-profit (effectiveTP already clears the fee floor).
