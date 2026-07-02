@@ -1,12 +1,15 @@
 package strategy
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"os"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/wferreirauy/binance-bot/ai"
 	"github.com/wferreirauy/binance-bot/config"
 	"github.com/wferreirauy/binance-bot/exchange"
 	"github.com/wferreirauy/binance-bot/indicator"
@@ -48,6 +51,23 @@ func FuturesTrade(
 
 	fc := exchange.NewFuturesClient()
 
+	// AI orchestrator, same wiring as the spot strategies: enabled providers
+	// analyze each scan tick and entries require consensus approval.
+	var aiOrch *ai.Orchestrator
+	if cfg.AI.Enabled {
+		aiOrch = ai.NewOrchestrator(
+			os.Getenv("OPENAI_API_KEY"),
+			os.Getenv("DEEPSEEK_API_KEY"),
+			os.Getenv("ANTHROPIC_API_KEY"),
+			cfg.AI.Providers.OpenAI.Model,
+			cfg.AI.Providers.DeepSeek.Model,
+			cfg.AI.Providers.Claude.Model,
+		)
+		if !aiOrch.IsEnabled() {
+			aiOrch = nil
+		}
+	}
+
 	refreshSecs := cfg.RefreshInterval
 	if refreshSecs <= 0 {
 		refreshSecs = 10
@@ -74,8 +94,9 @@ func FuturesTrade(
 			RoundPrice: roundPrice, RoundAmt: roundAmount, MaxOps: max_ops,
 		})
 		dash.LogInfo("[red::b]FUTURES MAINNET[-] — real funds and liquidation risk")
+		logStartupStatus(dash, cfg, aiOrch)
 		futuresSetup(dash, fc, cfg, ticker)
-		futuresTradeLoop(dash, fc, cfg, symbol, ticker, scoin, dcoin, qty, stopLoss, takeProfit, roundPrice, roundAmount, max_ops, refreshInterval, direction)
+		futuresTradeLoop(dash, fc, cfg, aiOrch, symbol, ticker, scoin, dcoin, qty, stopLoss, takeProfit, roundPrice, roundAmount, max_ops, refreshInterval, direction)
 	}()
 
 	if err := dash.Run(); err != nil {
@@ -132,6 +153,7 @@ func futuresTradeLoop(
 	dash *tui.Dashboard,
 	fc *exchange.FuturesClient,
 	cfg *config.Config,
+	aiOrch *ai.Orchestrator,
 	symbol, ticker, scoin, dcoin string,
 	qty, stopLoss, takeProfit float64,
 	roundPrice, roundAmount, max_ops uint,
@@ -236,6 +258,42 @@ func futuresTradeLoop(
 				ATR: atrVal, Price: price,
 			})
 
+			// AI analysis: same per-tick consensus gate as the spot strategies.
+			// Long entries need BUY approval, short entries need SELL approval.
+			var aiApproved = true
+			if aiOrch != nil {
+				dema := indicator.CalculateDEMA(ohlcv.Closes, cfg.Indicators.Dema.Length)
+				var currentDema float64
+				if len(dema) > 0 {
+					currentDema = dema[len(dema)-1]
+				}
+				snapshot := &ai.TechnicalSnapshot{
+					Symbol: symbol, Price: price, PrevPrice: prevPrice,
+					RSI: rsi[len(rsi)-1], MACDLine: macdLine[len(macdLine)-1], SignalLine: signalLine[len(signalLine)-1],
+					PrevMACDLine: macdLine[len(macdLine)-2], PrevSignalLine: signalLine[len(signalLine)-2],
+					UpperBand: bb.UpperBand[len(bb.UpperBand)-1], LowerBand: bb.LowerBand[len(bb.LowerBand)-1],
+					DEMA: currentDema, Tendency: tendency,
+					ADX: adxVal, Volume: currentVolume, AvgVolume: avgVolume,
+				}
+				aiMode := "BULL"
+				if !candidateLong {
+					aiMode = "BEAR"
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				consensus, err := aiOrch.Analyze(ctx, snapshot, aiMode)
+				cancel()
+				if err != nil {
+					dash.LogError(fmt.Sprintf("AI: %v", err))
+				} else {
+					updateDashAI(dash, consensus)
+					if candidateLong {
+						aiApproved = consensus.ShouldBuyWithMinConfidence(cfg.AI.MinConfidence)
+					} else {
+						aiApproved = consensus.ShouldSellWithMinConfidence(cfg.AI.MinConfidence)
+					}
+				}
+			}
+
 			eval := evaluateScalp(scalpEvalInput{
 				IsBull: candidateLong, Cfg: cfg,
 				Closes: ohlcv.Closes, RSI: rsi,
@@ -246,6 +304,12 @@ func futuresTradeLoop(
 				ATRVal: atrVal, Price: price,
 			})
 			if eval.RegimeBlocked || eval.ExtremeBlocked || eval.Score < eval.MinScore {
+				time.Sleep(refreshInterval)
+				continue
+			}
+			if !aiApproved {
+				lastWait = logWaitOnce(dash, lastWait, "ai-veto:"+tendency,
+					"[yellow]Entry blocked[-] — scalp score passed but AI consensus below min confidence")
 				time.Sleep(refreshInterval)
 				continue
 			}
@@ -302,7 +366,7 @@ func futuresTradeLoop(
 
 		//// EXIT: monitor TP / SL / trailing; close with reduceOnly ////
 		dash.SetPhase("MONITORING EXIT")
-		exitType := futuresExitLoop(dash, fc, cfg, ticker, scoin, dcoin, qty, entryPrice, stopLoss, takeProfit, roundPrice, roundAmount, refreshInterval, isLong, feeRoundTrip)
+		exitType := futuresExitLoop(dash, fc, cfg, aiOrch, ticker, scoin, dcoin, qty, entryPrice, stopLoss, takeProfit, roundPrice, roundAmount, refreshInterval, isLong, feeRoundTrip)
 
 		if exitType == "sl" {
 			consecutiveSL++
@@ -344,6 +408,7 @@ func futuresExitLoop(
 	dash *tui.Dashboard,
 	fc *exchange.FuturesClient,
 	cfg *config.Config,
+	aiOrch *ai.Orchestrator,
 	ticker, scoin, dcoin string,
 	qty, entryPrice, stopLoss, takeProfit float64,
 	roundPrice, roundAmount uint,
@@ -474,8 +539,42 @@ func futuresExitLoop(
 			return "ts"
 		}
 
-		// Take-profit (effectiveTP already clears the fee floor)
+		// Take-profit (effectiveTP already clears the fee floor).
+		// Mirrors spot: when AI is enabled, the exit needs consensus approval
+		// (long closes = SELL signal, short closes = BUY signal).
 		if pnl >= effectiveTP {
+			var aiExitApproved = true
+			if aiOrch != nil {
+				exitTendency := "sell-exit"
+				exitSignal := ai.SignalSell
+				aiMode := "BULL"
+				if !isLong {
+					exitTendency = "buy-exit"
+					exitSignal = ai.SignalBuy
+					aiMode = "BEAR"
+				}
+				snapshot := &ai.TechnicalSnapshot{
+					Symbol: ticker, Price: price, PrevPrice: prevPrice,
+					Tendency: exitTendency,
+				}
+				if len(rsi) > 0 {
+					snapshot.RSI = rsi[len(rsi)-1]
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				consensus, err := aiOrch.Analyze(ctx, snapshot, aiMode)
+				cancel()
+				if err != nil {
+					dash.LogError(fmt.Sprintf("AI exit: %v", err))
+				} else {
+					updateDashAI(dash, consensus)
+					aiExitApproved = consensus.AllowsExit(exitSignal, cfg.AI.MinConfidence)
+				}
+			}
+			if !aiExitApproved {
+				dash.LogInfo("[yellow]TP reached but AI vetoed exit — holding[-]")
+				time.Sleep(refreshInterval)
+				continue
+			}
 			dash.SetPhase("TAKE PROFIT")
 			dash.LogInfo(fmt.Sprintf("[green]Take-profit:[-] P&L %+.2f%% gross / %+.2f%% net >= %.2f%% (entry %.*f, price %.*f)",
 				pnl, pnl-feeRoundTrip, effectiveTP, roundPrice, entryPrice, roundPrice, price))
