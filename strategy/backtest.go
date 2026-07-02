@@ -5,7 +5,6 @@ import (
 	"log"
 	"strings"
 
-	binance_connector "github.com/binance/binance-connector-go"
 	"github.com/wferreirauy/binance-bot/config"
 	"github.com/wferreirauy/binance-bot/exchange"
 	"github.com/wferreirauy/binance-bot/indicator"
@@ -52,7 +51,7 @@ func RunBacktest(cfg *config.Config, symbol, strategyName string) (*BacktestResu
 		return nil, err
 	}
 	ticker := strings.Replace(symbol, "/", "", -1)
-	client := binance_connector.NewClient(exchange.APIKey, exchange.SecretKey, exchange.BaseURL)
+	client := exchange.NewClient()
 	period := cfg.HistoricalPrices.Period
 	if period < 60 {
 		period = 60

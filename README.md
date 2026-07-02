@@ -5,6 +5,8 @@
 
 ## Features
 
+- **24/7 Infinite Mode** — Set `--operations 0` to run continuously until manually stopped; the default remains 100 operations per session
+- **Server-Time Sync** — Continuously compensates local clock drift against Binance server time (min-RTT sampling), preventing `-1021` timestamp rejections on signed requests
 - **Auto Trade** — Automatically detects market tendency and switches between bull/bear strategies per operation; supports forced strategy mode and waits when the account cannot fund the detected side
 - **Bull Trade** — Buy-low-sell-high strategy for uptrending markets
 - **Bear Trade** — Sell-high-buy-low strategy for downtrending markets
@@ -214,7 +216,7 @@ These arguments apply to the `auto-trade`, `bull-trade`, and `bear-trade` comman
 | `--sell-factor`      | `-s`  | Factor to determine the target price for a LIMIT sell order.                                | `1.0001`      |
 | `--round-price`      | `-rp` | Decimal precision for rounding price values.                                                | **Required**  |
 | `--round-amount`     | `-ra` | Decimal precision for rounding amount values.                                               | **Required**  |
-| `--operations`       | `-o`  | Number of operations to execute during the trading session.                                 | `100`         |
+| `--operations`       | `-o`  | Number of operations to execute (`0` = infinite, run until manually stopped).              | `100`         |
 | `--strategy`         | `-st` | *(auto-trade only)* Force entry strategy: `bull`, `bear`, or `auto`.                       | `auto`        |
 | `--help`             | `-h`  | Show help for the command.                                                                  | -             |
 
@@ -234,7 +236,7 @@ These arguments apply to the `auto-trade`, `bull-trade`, and `bear-trade` comman
      binance-bot [global options] command <command args>
 
   VERSION:
-     v0.14.2
+     v0.15.0
 
   AUTHOR:
      Walter Ferreira <wferreirauy@gmail.com>

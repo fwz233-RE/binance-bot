@@ -54,7 +54,7 @@ func BullTrade(
 	refreshInterval := time.Duration(refreshSecs) * time.Second
 
 	// initialize binance api client
-	client := binance_connector.NewClient(exchange.APIKey, exchange.SecretKey, exchange.BaseURL)
+	client := exchange.NewClient()
 
 	// validate symbol in format 0-9A-Z/0-9A-Z
 	if re := regexp.MustCompile(`(?m)^[0-9A-Z]{1,8}/[0-9A-Z]{2,8}$`); !re.Match([]byte(symbol)) {
@@ -130,7 +130,8 @@ func bullTradeLoop(
 	var consecutiveSL int // tracks consecutive stop-loss exits for cooldown
 	takeProfit = feeAdjustedTakeProfit(symbol, cfg, takeProfit, dash)
 
-	for range max_ops {
+	// max_ops == 0 means run until manually stopped (24/7 mode)
+	for max_ops == 0 || operation <= int(max_ops) {
 		dash.SetOperation(operation)
 		qty = indicator.RoundFloat(qty, roundAmount)
 

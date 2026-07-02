@@ -16,7 +16,7 @@ import (
 func main() {
 	app := &cli.App{
 		Name:     "binance-bot",
-		Version:  "v0.14.2",
+		Version:  "v0.15.0",
 		Compiled: time.Now(),
 		Authors: []*cli.Author{
 			{
@@ -92,7 +92,7 @@ func main() {
 					},
 					&cli.IntFlag{
 						Name:    "operations",
-						Usage:   "number of operations",
+						Usage:   "number of operations (0 = run until manually stopped)",
 						Value:   100,
 						Aliases: []string{"o"},
 					},
@@ -159,7 +159,7 @@ func main() {
 					},
 					&cli.IntFlag{
 						Name:    "operations",
-						Usage:   "number of operations",
+						Usage:   "number of operations (0 = run until manually stopped)",
 						Value:   100,
 						Aliases: []string{"o"},
 					},
@@ -226,7 +226,7 @@ func main() {
 					},
 					&cli.IntFlag{
 						Name:    "operations",
-						Usage:   "number of operations",
+						Usage:   "number of operations (0 = run until manually stopped)",
 						Value:   100,
 						Aliases: []string{"o"},
 					},
