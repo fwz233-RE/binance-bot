@@ -252,6 +252,22 @@ func futuresTradeLoop(
 				side = "SELL"
 				label = "SHORT"
 			}
+
+			// Margin pre-check: skip the entry quietly when the futures wallet
+			// cannot fund it, instead of spamming rejected orders (-2019).
+			leverage := cfg.Futures.Leverage
+			if leverage <= 0 {
+				leverage = 2
+			}
+			requiredMargin := qty * price / float64(leverage) * 1.05 // 5% headroom for fees/mark-price gap
+			if available, balErr := fc.FuturesBalance(dcoin); balErr == nil && available < requiredMargin {
+				lastWait = logWaitOnce(dash, lastWait, fmt.Sprintf("margin-wait:%.2f", requiredMargin),
+					fmt.Sprintf("[yellow]Entry skipped[-] — need ~%.2f %s margin, available %.2f; waiting for funds",
+						requiredMargin, dcoin, available))
+				time.Sleep(refreshInterval)
+				continue
+			}
+
 			logEntryConditions(dash, label, eval.Conditions, eval.Score, eval.MaxScore, eval.MinScore, true)
 
 			dash.SetPhase("OPENING " + label)
