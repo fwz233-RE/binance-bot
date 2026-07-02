@@ -15,16 +15,13 @@ import (
 	"time"
 )
 
-// USDT-M futures endpoints. The spot connector cannot speak /fapi, so the
+// USDT-M futures endpoint. The spot connector cannot speak /fapi, so the
 // futures path uses this small purpose-built client instead of a new
 // heavyweight dependency.
-const (
-	FuturesMainnetURL = "https://fapi.binance.com"
-	FuturesTestnetURL = "https://testnet.binancefuture.com"
-)
+const FuturesMainnetURL = "https://fapi.binance.com"
 
-// FuturesAPIKey/FuturesSecretKey fall back to the spot keys so mainnet users
-// with unified API keys need no extra setup. Testnet requires its own keys.
+// FuturesAPIKey/FuturesSecretKey fall back to the spot keys so users with
+// unified API keys need no extra setup.
 var (
 	FuturesAPIKey    = envOr("BINANCE_FUTURES_API_KEY", APIKey)
 	FuturesSecretKey = envOr("BINANCE_FUTURES_SECRET_KEY", SecretKey)
@@ -45,16 +42,12 @@ type FuturesClient struct {
 	http    *http.Client
 }
 
-// NewFuturesClient builds a futures client for the given base URL
-// (FuturesMainnetURL or FuturesTestnetURL) and lazily starts the shared
-// server-time sync loop.
-func NewFuturesClient(baseURL string) *FuturesClient {
+// NewFuturesClient builds a mainnet futures client and lazily starts the
+// shared server-time sync loop.
+func NewFuturesClient() *FuturesClient {
 	timeSyncOnce.Do(startTimeSync)
-	if baseURL == "" {
-		baseURL = FuturesMainnetURL
-	}
 	return &FuturesClient{
-		baseURL: strings.TrimRight(baseURL, "/"),
+		baseURL: FuturesMainnetURL,
 		http:    &http.Client{Timeout: 15 * time.Second},
 	}
 }

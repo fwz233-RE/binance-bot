@@ -145,13 +145,10 @@ backtest:
   initial-balance: 1000
   fee-pct: 0.1
 
-# USDT-M perpetual futures (futures-trade command)
+# USDT-M perpetual futures (futures-trade command) — MAINNET, real funds
 # API keys: BINANCE_FUTURES_API_KEY / BINANCE_FUTURES_SECRET_KEY env vars
 # (falls back to BINANCE_API_KEY / BINANCE_SECRET_KEY when unset).
-# Testnet keys: https://testnet.binancefuture.com
 futures:
-  testnet: true        # true → testnet.binancefuture.com; ALWAYS validate here first
-  # base-url: ""       # explicit override, wins over the testnet flag
   leverage: 2          # initial leverage per symbol (1-125, keep it low)
   margin-type: "isolated"  # isolated (losses capped per position) or crossed
 

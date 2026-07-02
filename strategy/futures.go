@@ -46,11 +46,7 @@ func FuturesTrade(
 	}
 	ticker := strings.Replace(symbol, "/", "", -1)
 
-	baseURL := cfg.Futures.BaseURL
-	if baseURL == "" && cfg.Futures.Testnet {
-		baseURL = exchange.FuturesTestnetURL
-	}
-	fc := exchange.NewFuturesClient(baseURL)
+	fc := exchange.NewFuturesClient()
 
 	refreshSecs := cfg.RefreshInterval
 	if refreshSecs <= 0 {
@@ -77,11 +73,7 @@ func FuturesTrade(
 			Amount: qty, StopLoss: stopLoss, TakeProfit: takeProfit,
 			RoundPrice: roundPrice, RoundAmt: roundAmount, MaxOps: max_ops,
 		})
-		if cfg.Futures.Testnet || baseURL == exchange.FuturesTestnetURL {
-			dash.LogInfo("[yellow::b]FUTURES TESTNET[-] — orders go to testnet.binancefuture.com, no real funds involved")
-		} else {
-			dash.LogInfo("[red::b]FUTURES MAINNET[-] — real funds and liquidation risk")
-		}
+		dash.LogInfo("[red::b]FUTURES MAINNET[-] — real funds and liquidation risk")
 		futuresSetup(dash, fc, cfg, ticker)
 		futuresTradeLoop(dash, fc, cfg, symbol, ticker, scoin, dcoin, qty, stopLoss, takeProfit, roundPrice, roundAmount, max_ops, refreshInterval, direction)
 	}()

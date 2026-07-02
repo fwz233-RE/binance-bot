@@ -5,7 +5,7 @@
 
 ## Features
 
-- **USDT-M Futures** — `futures-trade` opens leveraged long/short positions on Binance perpetual futures with isolated/crossed margin, configurable leverage, reduce-only exits with relentless retry, and a testnet-first workflow (`futures.testnet: true`)
+- **USDT-M Futures** — `futures-trade` opens leveraged long/short positions on Binance perpetual futures with isolated/crossed margin, configurable leverage, and reduce-only exits with relentless retry
 - **24/7 Infinite Mode** — Set `--operations 0` to run continuously until manually stopped; the default remains 100 operations per session
 - **Server-Time Sync** — Continuously compensates local clock drift against Binance server time (min-RTT sampling), preventing `-1021` timestamp rejections on signed requests
 - **Auto Trade** — Automatically detects market tendency and switches between bull/bear strategies per operation; supports forced strategy mode and waits when the account cannot fund the detected side
@@ -73,10 +73,8 @@ Before using the Binance Trade Bot, you need to configure your environment with 
    export BINANCE_SECRET_KEY=<your-secret-key>
    ```
 
-   For the `futures-trade` command you can provide dedicated futures keys
-   (required for the futures testnet, whose keys come from
-   [testnet.binancefuture.com](https://testnet.binancefuture.com)); they fall
-   back to the spot keys when unset:
+   For the `futures-trade` command you can provide dedicated futures keys;
+   they fall back to the spot keys when unset:
 
    ```bash
    export BINANCE_FUTURES_API_KEY=<your-futures-api-key>
@@ -237,8 +235,7 @@ Trades USDT-M perpetual futures: opens leveraged LONG or SHORT positions and
 closes them with reduce-only market orders (take-profit, stop-loss, trailing
 stop, time-stop). Exit orders are retried indefinitely — a leveraged position
 is never left unmanaged. Leverage and margin type come from the `futures`
-config section; **set `futures.testnet: true` and testnet API keys first** to
-validate the full flow with zero risk before trading real funds.
+config section. **Orders go to the live exchange and trade real funds.**
 
 ```bash
 binance-bot -f binance-config.yml futures-trade -t BTC/USDT -a 0.002 -sl 1.0 -tp 1.5 -rp 2 -ra 3 -o 0 -d auto
@@ -257,7 +254,7 @@ binance-bot -f binance-config.yml futures-trade -t BTC/USDT -a 0.002 -sl 1.0 -tp
 
 > **Risk note**: P&L percentages are on price movement; with leverage `L` the
 > margin impact is `L×` that. A 1% stop-loss at 10x leverage costs 10% of the
-> position margin. Keep leverage low and always start on the testnet.
+> position margin. Keep leverage low and start with minimal quantities.
 
 ### Help Commands
 
@@ -275,7 +272,7 @@ binance-bot -f binance-config.yml futures-trade -t BTC/USDT -a 0.002 -sl 1.0 -tp
      binance-bot [global options] command <command args>
 
   VERSION:
-     v0.16.0
+     v0.16.1
 
   AUTHOR:
      Walter Ferreira <wferreirauy@gmail.com>

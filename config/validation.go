@@ -190,11 +190,6 @@ func (c *Config) Validate() []error {
 	default:
 		errs = append(errs, fmt.Errorf("futures.margin-type must be \"isolated\" or \"crossed\""))
 	}
-	if c.Futures.BaseURL != "" {
-		if parsed, err := url.ParseRequestURI(c.Futures.BaseURL); err != nil || parsed.Scheme == "" || parsed.Host == "" {
-			errs = append(errs, fmt.Errorf("futures.base-url must be a valid absolute URL"))
-		}
-	}
 	if c.API.Address == "" {
 		errs = append(errs, fmt.Errorf("api.address must not be empty"))
 	}

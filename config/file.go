@@ -150,8 +150,6 @@ type Config struct {
 		FeePct         float64 `yaml:"fee-pct"`
 	} `yaml:"backtest"`
 	Futures struct {
-		Testnet    bool   `yaml:"testnet"`     // true → trade against testnet.binancefuture.com
-		BaseURL    string `yaml:"base-url"`    // optional explicit override; wins over testnet flag
 		Leverage   int    `yaml:"leverage"`    // initial leverage set per symbol (default 2)
 		MarginType string `yaml:"margin-type"` // "isolated" (default) or "crossed"
 	} `yaml:"futures"`
