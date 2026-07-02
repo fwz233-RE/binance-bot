@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strings"
 )
 
 var binanceIntervalPattern = regexp.MustCompile(`^(1s|1m|3m|5m|15m|30m|1h|2h|4h|6h|8h|12h|1d|3d|1w|1M)$`)
@@ -180,6 +181,19 @@ func (c *Config) Validate() []error {
 	}
 	if c.Backtest.FeePct < 0 {
 		errs = append(errs, fmt.Errorf("backtest.fee-pct must be greater than or equal to 0"))
+	}
+	if c.Futures.Leverage < 0 || c.Futures.Leverage > 125 {
+		errs = append(errs, fmt.Errorf("futures.leverage must be between 0 and 125"))
+	}
+	switch strings.ToLower(c.Futures.MarginType) {
+	case "", "isolated", "crossed":
+	default:
+		errs = append(errs, fmt.Errorf("futures.margin-type must be \"isolated\" or \"crossed\""))
+	}
+	if c.Futures.BaseURL != "" {
+		if parsed, err := url.ParseRequestURI(c.Futures.BaseURL); err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			errs = append(errs, fmt.Errorf("futures.base-url must be a valid absolute URL"))
+		}
 	}
 	if c.API.Address == "" {
 		errs = append(errs, fmt.Errorf("api.address must not be empty"))

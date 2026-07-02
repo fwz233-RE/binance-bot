@@ -16,7 +16,7 @@ import (
 func main() {
 	app := &cli.App{
 		Name:     "binance-bot",
-		Version:  "v0.15.0",
+		Version:  "v0.16.0",
 		Compiled: time.Now(),
 		Authors: []*cli.Author{
 			{
@@ -250,6 +250,68 @@ func main() {
 				Aliases: []string{"tg"},
 				Action: func(cCtx *cli.Context) error {
 					strategy.TopGainers(cCtx.String("config-file"))
+					return nil
+				},
+			},
+			{
+				Name:    "futures-trade",
+				Usage:   "Trade USDT-M perpetual futures (long/short with leverage, config: futures section)",
+				Aliases: []string{"ft"},
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:     "ticker",
+						Usage:    "ticker to trade, format ABC/USD eg. BTC/USDT",
+						Aliases:  []string{"t"},
+						Required: true,
+					},
+					&cli.Float64Flag{
+						Name:     "amount",
+						Usage:    "contract quantity to trade (in base asset)",
+						Aliases:  []string{"a"},
+						Required: true,
+					},
+					&cli.Float64Flag{
+						Name:    "stop-loss",
+						Usage:   "Stop-Loss percentage on position P&L, eg. 1.0",
+						Value:   1.0,
+						Aliases: []string{"sl"},
+					},
+					&cli.Float64Flag{
+						Name:    "take-profit",
+						Usage:   "Take profit percentage on position P&L, eg. 1.5",
+						Value:   1.5,
+						Aliases: []string{"tp"},
+					},
+					&cli.IntFlag{
+						Name:     "round-price",
+						Usage:    "price decimals round",
+						Aliases:  []string{"rp"},
+						Required: true,
+					},
+					&cli.IntFlag{
+						Name:     "round-amount",
+						Usage:    "amount decimals round",
+						Aliases:  []string{"ra"},
+						Required: true,
+					},
+					&cli.IntFlag{
+						Name:    "operations",
+						Usage:   "number of operations (0 = run until manually stopped)",
+						Value:   100,
+						Aliases: []string{"o"},
+					},
+					&cli.StringFlag{
+						Name:    "direction",
+						Usage:   "position direction: 'long', 'short', or 'auto' (follow tendency)",
+						Value:   "auto",
+						Aliases: []string{"d"},
+					},
+				},
+				Action: func(cCtx *cli.Context) error {
+					strategy.FuturesTrade(cCtx.String("config-file"), cCtx.String("ticker"), cCtx.Float64("amount"),
+						cCtx.Float64("stop-loss"), cCtx.Float64("take-profit"),
+						cCtx.Uint("round-price"), cCtx.Uint("round-amount"),
+						cCtx.Uint("operations"), cCtx.String("direction"))
 					return nil
 				},
 			},

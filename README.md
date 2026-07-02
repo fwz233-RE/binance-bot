@@ -5,6 +5,7 @@
 
 ## Features
 
+- **USDT-M Futures** — `futures-trade` opens leveraged long/short positions on Binance perpetual futures with isolated/crossed margin, configurable leverage, reduce-only exits with relentless retry, and a testnet-first workflow (`futures.testnet: true`)
 - **24/7 Infinite Mode** — Set `--operations 0` to run continuously until manually stopped; the default remains 100 operations per session
 - **Server-Time Sync** — Continuously compensates local clock drift against Binance server time (min-RTT sampling), preventing `-1021` timestamp rejections on signed requests
 - **Auto Trade** — Automatically detects market tendency and switches between bull/bear strategies per operation; supports forced strategy mode and waits when the account cannot fund the detected side
@@ -70,6 +71,16 @@ Before using the Binance Trade Bot, you need to configure your environment with 
    ```bash
    export BINANCE_API_KEY=<your-api-key>
    export BINANCE_SECRET_KEY=<your-secret-key>
+   ```
+
+   For the `futures-trade` command you can provide dedicated futures keys
+   (required for the futures testnet, whose keys come from
+   [testnet.binancefuture.com](https://testnet.binancefuture.com)); they fall
+   back to the spot keys when unset:
+
+   ```bash
+   export BINANCE_FUTURES_API_KEY=<your-futures-api-key>
+   export BINANCE_FUTURES_SECRET_KEY=<your-futures-secret-key>
    ```
 
 3. **Set AI Provider API Keys (optional)**
@@ -220,6 +231,34 @@ These arguments apply to the `auto-trade`, `bull-trade`, and `bear-trade` comman
 | `--strategy`         | `-st` | *(auto-trade only)* Force entry strategy: `bull`, `bear`, or `auto`.                       | `auto`        |
 | `--help`             | `-h`  | Show help for the command.                                                                  | -             |
 
+#### Futures Trading (`futures-trade`, `ft`)
+
+Trades USDT-M perpetual futures: opens leveraged LONG or SHORT positions and
+closes them with reduce-only market orders (take-profit, stop-loss, trailing
+stop, time-stop). Exit orders are retried indefinitely — a leveraged position
+is never left unmanaged. Leverage and margin type come from the `futures`
+config section; **set `futures.testnet: true` and testnet API keys first** to
+validate the full flow with zero risk before trading real funds.
+
+```bash
+binance-bot -f binance-config.yml futures-trade -t BTC/USDT -a 0.002 -sl 1.0 -tp 1.5 -rp 2 -ra 3 -o 0 -d auto
+```
+
+| Option           | Short | Description                                                        | Default      |
+|------------------|-------|--------------------------------------------------------------------|--------------|
+| `--ticker`       | `-t`  | The trading pair ticker in the format `ABC/USD` (e.g., `BTC/USDT`). | **Required** |
+| `--amount`       | `-a`  | Contract quantity in base asset.                                   | **Required** |
+| `--stop-loss`    | `-sl` | Stop-loss percentage on position P&L.                              | `1.0`        |
+| `--take-profit`  | `-tp` | Take-profit percentage on position P&L.                            | `1.5`        |
+| `--round-price`  | `-rp` | Decimal precision for rounding price values.                       | **Required** |
+| `--round-amount` | `-ra` | Decimal precision for rounding amount values.                      | **Required** |
+| `--operations`   | `-o`  | Number of operations (`0` = infinite, run until manually stopped). | `100`        |
+| `--direction`    | `-d`  | Position direction: `long`, `short`, or `auto` (follow tendency).  | `auto`       |
+
+> **Risk note**: P&L percentages are on price movement; with leverage `L` the
+> margin impact is `L×` that. A 1% stop-loss at 10x leverage costs 10% of the
+> position margin. Keep leverage low and always start on the testnet.
+
 ### Help Commands
 
 - For general help on the bot:
@@ -236,7 +275,7 @@ These arguments apply to the `auto-trade`, `bull-trade`, and `bear-trade` comman
      binance-bot [global options] command <command args>
 
   VERSION:
-     v0.15.0
+     v0.16.0
 
   AUTHOR:
      Walter Ferreira <wferreirauy@gmail.com>
@@ -246,6 +285,7 @@ These arguments apply to the `auto-trade`, `bull-trade`, and `bear-trade` comman
      bear-trade, brt   Start a bear trade run (sell high, buy back low)
      auto-trade, at    Automatically detect market tendency and trade accordingly (bull or bear)
      top-gainers, tg   Monitor top market gainers in real-time
+     futures-trade, ft  Trade USDT-M perpetual futures (long/short with leverage, config: futures section)
      rotate-trade, rt  Scout a basket of assets and rotate through the configured bridge asset
      backtest, btst    Backtest a registered strategy on recent Binance candles
      serve, srv        Serve persisted trade, scout, and value history over HTTP
