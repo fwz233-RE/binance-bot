@@ -278,6 +278,28 @@ func (c *FuturesClient) FuturesGetOrder(symbol string, orderId int64) (*FuturesO
 	return &order, nil
 }
 
+// FuturesTakerFeePct returns the account's taker commission rate for a symbol
+// as a percentage (e.g. 0.05 for 0.05%), from /fapi/v1/commissionRate.
+func (c *FuturesClient) FuturesTakerFeePct(symbol string) (float64, error) {
+	params := url.Values{}
+	params.Set("symbol", symbol)
+	body, err := c.request(http.MethodGet, "/fapi/v1/commissionRate", params, true)
+	if err != nil {
+		return 0, err
+	}
+	var raw struct {
+		TakerCommissionRate string `json:"takerCommissionRate"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return 0, fmt.Errorf("futures: decode commission rate: %w", err)
+	}
+	rate, err := strconv.ParseFloat(raw.TakerCommissionRate, 64)
+	if err != nil {
+		return 0, fmt.Errorf("futures: parse commission rate: %w", err)
+	}
+	return rate * 100, nil
+}
+
 // FuturesPosition is the live position snapshot for one symbol (one-way mode).
 type FuturesPosition struct {
 	PositionAmt      float64 // signed: >0 long, <0 short, 0 flat

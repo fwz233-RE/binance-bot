@@ -143,6 +143,10 @@ func futuresTradeLoop(
 	var operation = 1
 	var consecutiveSL int
 
+	// Round-trip taker fees as % of notional (~% of price move). Every exit
+	// decision must clear this floor or a "profitable" close is a net loss.
+	feeRoundTrip := futuresRoundTripFeePct(dash, fc, cfg, ticker)
+
 	// max_ops == 0 means run until manually stopped (24/7 mode)
 	for max_ops == 0 || operation <= int(max_ops) {
 		dash.SetOperation(operation)
@@ -298,7 +302,7 @@ func futuresTradeLoop(
 
 		//// EXIT: monitor TP / SL / trailing; close with reduceOnly ////
 		dash.SetPhase("MONITORING EXIT")
-		exitType := futuresExitLoop(dash, fc, cfg, ticker, scoin, dcoin, qty, entryPrice, stopLoss, takeProfit, roundPrice, roundAmount, refreshInterval, isLong)
+		exitType := futuresExitLoop(dash, fc, cfg, ticker, scoin, dcoin, qty, entryPrice, stopLoss, takeProfit, roundPrice, roundAmount, refreshInterval, isLong, feeRoundTrip)
 
 		if exitType == "sl" {
 			consecutiveSL++
@@ -334,6 +338,8 @@ func futuresTradeLoop(
 
 // futuresExitLoop watches an open position until an exit fires. Returns the
 // exit type ("tp", "sl", "ts"). Closing uses reduceOnly and infinite retry.
+// feeRoundTrip (% of notional) gates every in-profit exit so displayed wins
+// survive the fee deduction.
 func futuresExitLoop(
 	dash *tui.Dashboard,
 	fc *exchange.FuturesClient,
@@ -343,6 +349,7 @@ func futuresExitLoop(
 	roundPrice, roundAmount uint,
 	refreshInterval time.Duration,
 	isLong bool,
+	feeRoundTrip float64,
 ) string {
 	period := cfg.HistoricalPrices.Period
 	interval := cfg.HistoricalPrices.Interval
@@ -393,7 +400,7 @@ func futuresExitLoop(
 		if len(rsi) > 0 {
 			dash.UpdateIndicators(&tui.IndicatorData{
 				RSI: rsi[len(rsi)-1], RSIUpperLimit: cfg.Indicators.Rsi.UpperLimit, RSILowerLimit: cfg.Indicators.Rsi.LowerLimit,
-				Tendency: fmt.Sprintf("P&L: %+.2f%%", pnl),
+				Tendency: fmt.Sprintf("P&L: %+.2f%% (net %+.2f%%)", pnl, pnl-feeRoundTrip),
 				ATR:      atrVal, Price: price,
 			})
 		}
@@ -426,17 +433,25 @@ func futuresExitLoop(
 			}
 		}
 
-		// ATR-aware effective TP/SL, then break-even pinning (same DSL as spot).
+		// ATR-aware effective TP/SL (same DSL as spot), then two fee gates:
+		// 1. TP must clear round-trip fees + buffer, or an ATR-shrunk target
+		//    would close "in profit" at a net loss.
+		// 2. Break-even pins the exit at net zero (entry + fees), not entry.
 		effectiveTP, effectiveSL := effectiveTPAndSL(cfg, takeProfit, stopLoss, atrVal, price)
+		if minTP := feeRoundTrip + cfg.Fees.BufferPct; feeRoundTrip > 0 && effectiveTP < minTP {
+			effectiveTP = minTP
+		}
 		if cfg.ScalpMode.BreakevenATRMult > 0 && atrVal > 0 && !breakevenActive {
 			atrPct := (atrVal / entryPrice) * 100
 			if peakPnL >= cfg.ScalpMode.BreakevenATRMult*atrPct {
 				breakevenActive = true
-				dash.LogInfo(fmt.Sprintf("[lime]BREAK-EVEN[-] peak P&L %.2f%% — SL pinned to entry %.*f", peakPnL, roundPrice, entryPrice))
+				dash.LogInfo(fmt.Sprintf("[lime]BREAK-EVEN[-] peak P&L %.2f%% — exit floor pinned to net zero (fees %.2f%%)", peakPnL, feeRoundTrip))
 			}
 		}
-		if breakevenActive && effectiveSL > 0 {
-			effectiveSL = 0
+		if breakevenActive && effectiveSL > -feeRoundTrip {
+			// SL triggers at pnl <= -effectiveSL, so -feeRoundTrip means
+			// "close when gross profit only just covers the fees".
+			effectiveSL = -feeRoundTrip
 		}
 
 		// Stop-loss (liquidation protection is exactly this line running 24/7)
@@ -449,20 +464,21 @@ func futuresExitLoop(
 			return "sl"
 		}
 
-		// Time-stop for flat positions
-		if cfg.ScalpMode.TimeStopBars > 0 && barsSinceEntry >= cfg.ScalpMode.TimeStopBars && pnl >= 0 && pnl < effectiveTP {
+		// Time-stop for flat positions: only exits once gross P&L at least
+		// covers the fees, so freeing capital never converts flat to loss.
+		if cfg.ScalpMode.TimeStopBars > 0 && barsSinceEntry >= cfg.ScalpMode.TimeStopBars && pnl >= feeRoundTrip && pnl < effectiveTP {
 			dash.SetPhase("TIME STOP")
-			dash.LogInfo(fmt.Sprintf("[yellow]Time-stop:[-] %d bars, P&L %+.2f%% (TP not reached)", barsSinceEntry, pnl))
+			dash.LogInfo(fmt.Sprintf("[yellow]Time-stop:[-] %d bars, P&L %+.2f%% gross / %+.2f%% net (TP not reached)", barsSinceEntry, pnl, pnl-feeRoundTrip))
 			closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[yellow::b]TIME-STOP[-]")
 			recordTrade(cfg, storage.TradeRecord{Symbol: ticker, Side: closeSide, Quantity: qty, Price: price, Reason: "futures-timestop"})
 			return "ts"
 		}
 
-		// Take-profit
+		// Take-profit (effectiveTP already clears the fee floor)
 		if pnl >= effectiveTP {
 			dash.SetPhase("TAKE PROFIT")
-			dash.LogInfo(fmt.Sprintf("[green]Take-profit:[-] P&L %+.2f%% >= %.2f%% (entry %.*f, price %.*f)",
-				pnl, effectiveTP, roundPrice, entryPrice, roundPrice, price))
+			dash.LogInfo(fmt.Sprintf("[green]Take-profit:[-] P&L %+.2f%% gross / %+.2f%% net >= %.2f%% (entry %.*f, price %.*f)",
+				pnl, pnl-feeRoundTrip, effectiveTP, roundPrice, entryPrice, roundPrice, price))
 			closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[green::b]TAKE-PROFIT[-]")
 			recordTrade(cfg, storage.TradeRecord{Symbol: ticker, Side: closeSide, Quantity: qty, Price: price, Reason: "futures-tp"})
 			return "tp"
@@ -470,6 +486,25 @@ func futuresExitLoop(
 
 		time.Sleep(refreshInterval)
 	}
+}
+
+// futuresRoundTripFeePct resolves the taker fee for the symbol and returns the
+// round-trip cost (2 legs) as % of notional. Returns 0 when fees are disabled
+// in config; falls back to 0.05%/leg when the commission API is unavailable.
+func futuresRoundTripFeePct(dash *tui.Dashboard, fc *exchange.FuturesClient, cfg *config.Config, ticker string) float64 {
+	if cfg != nil && !cfg.Fees.Enabled {
+		return 0
+	}
+	taker, err := fc.FuturesTakerFeePct(ticker)
+	if err != nil || taker <= 0 {
+		taker = 0.05 // Binance USDT-M VIP0 taker default
+		if err != nil {
+			dash.LogError(fmt.Sprintf("Fee lookup failed, assuming %.3f%%/leg: %v", taker, err))
+		}
+	}
+	roundTrip := taker * 2
+	dash.LogInfo(fmt.Sprintf("[yellow]Fee-aware exits[-] taker %.4f%%/leg — profits must clear %.4f%% round-trip", taker, roundTrip))
+	return roundTrip
 }
 
 // futuresTendency reuses the DEMA-vs-EMA tendency rule on candles already in hand.

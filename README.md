@@ -235,9 +235,12 @@ Trades USDT-M perpetual futures: opens leveraged LONG or SHORT positions and
 closes them with reduce-only market orders (take-profit, stop-loss, trailing
 stop, time-stop). Exit orders are retried indefinitely — a leveraged position
 is never left unmanaged. Entries are skipped (with a single log line) while
-the futures wallet cannot fund the required margin. Leverage and margin type
-come from the `futures` config section. **Orders go to the live exchange and
-trade real funds.**
+the futures wallet cannot fund the required margin. Exits are fee-aware: the
+live taker rate is fetched per session, take-profit targets are floored at
+round-trip fees + buffer, time-stop and break-even close at net-zero or
+better, and the dashboard shows both gross and net P&L. Leverage and margin
+type come from the `futures` config section. **Orders go to the live exchange
+and trade real funds.**
 
 ```bash
 binance-bot -f binance-config.yml futures-trade -t BTC/USDT -a 0.002 -sl 1.0 -tp 1.5 -rp 2 -ra 3 -o 0 -d auto
@@ -274,7 +277,7 @@ binance-bot -f binance-config.yml futures-trade -t BTC/USDT -a 0.002 -sl 1.0 -tp
      binance-bot [global options] command <command args>
 
   VERSION:
-     v0.16.2
+     v0.16.3
 
   AUTHOR:
      Walter Ferreira <wferreirauy@gmail.com>
