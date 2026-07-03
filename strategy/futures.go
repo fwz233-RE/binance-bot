@@ -646,9 +646,21 @@ func futuresExitLoop(
 		}
 		if cfg.ScalpMode.BreakevenATRMult > 0 && atrVal > 0 && !breakevenActive {
 			atrPct := (atrVal / entryPrice) * 100
-			if peakPnL >= cfg.ScalpMode.BreakevenATRMult*atrPct {
+			// The arm threshold must clear the exit floor (fees + buffer):
+			// in low-ATR regimes the pure ATR threshold sits below the floor
+			// and arming would realize a guaranteed micro-loss immediately.
+			armAt := cfg.ScalpMode.BreakevenATRMult * atrPct
+			if minArm := feeRoundTrip + cfg.Fees.BufferPct; armAt < minArm {
+				armAt = minArm
+			}
+			// Only arm while the position is currently above the floor.
+			// peakPnL is history — if ATR shrinks later, the threshold can be
+			// met retroactively while the position is already under water,
+			// and arming then would close a losing trade labeled break-even
+			// (seen live: armed at P&L −0.25% and closed on the spot).
+			if peakPnL >= armAt && pnl > feeRoundTrip {
 				breakevenActive = true
-				dash.LogInfo(fmt.Sprintf("[lime]BREAK-EVEN[-] peak P&L %.2f%% — exit floor pinned to net zero (fees %.2f%%)", peakPnL, feeRoundTrip))
+				dash.LogInfo(fmt.Sprintf("[lime]BREAK-EVEN[-] peak P&L %.2f%% ≥ %.2f%% — exit floor pinned to net zero (fees %.2f%%)", peakPnL, armAt, feeRoundTrip))
 			}
 		}
 		if breakevenActive {
@@ -673,8 +685,8 @@ func futuresExitLoop(
 		// Stop-loss (liquidation protection is exactly this line running 24/7)
 		if pnl <= -effectiveSL {
 			dash.SetPhase("STOP LOSS")
-			dash.LogInfo(fmt.Sprintf("[red]Stop-loss:[-] P&L %+.2f%% <= -%.2f%% (entry %.*f, price %.*f)",
-				pnl, effectiveSL, roundPrice, entryPrice, roundPrice, exitPrice))
+			dash.LogInfo(fmt.Sprintf("[red]Stop-loss:[-] P&L %+.2f%% <= %+.2f%% (entry %.*f, price %.*f)",
+				pnl, -effectiveSL, roundPrice, entryPrice, roundPrice, exitPrice))
 			fill := closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[red::b]STOP-LOSS[-]")
 			return "sl", recordFuturesExit(cfg, ticker, closeSide, op, fill, exitPrice, feeRoundTrip, "futures-sl")
 		}

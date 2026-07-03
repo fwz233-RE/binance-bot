@@ -314,7 +314,7 @@ Isolation guarantees:
      binance-bot [global options] command <command args>
 
   VERSION:
-     v0.22.2
+     v0.22.3
 
   AUTHOR:
      Walter Ferreira <wferreirauy@gmail.com>
@@ -592,7 +592,7 @@ scalp-mode:
 | `scalp-mode.tp-atr-multiplier` | float | `0.0` | If >0, take-profit becomes `max(takeProfit%, mult × ATR%)`. |
 | `scalp-mode.sl-atr-multiplier` | float | `0.0` | If >0, stop-loss becomes `max(stopLoss%, mult × ATR%)`. Overrides `atr-multiplier` when set. |
 | `scalp-mode.time-stop-bars` | int | `0` | Exits flat (P&L≥0 but TP not reached) positions after N closed bars of the trading interval (previously counted refresh ticks). |
-| `scalp-mode.breakeven-atr-mult` | float | `0.0` | Once peak P&L ≥ mult × ATR%, pins the stop-loss to the entry price. |
+| `scalp-mode.breakeven-atr-mult` | float | `0.0` | Once peak P&L ≥ `max(mult × ATR%, fees + buffer)` **and** current P&L is above the fee floor, pins the exit floor to net zero. The fee-floor arm gate prevents guaranteed micro-loss exits in low-ATR regimes. |
 | `scalp-mode.min-atr-pct` | float | `0.0` | Regime filter — refuse entries when ATR% is below this threshold (dead market). |
 | `scalp-mode.max-atr-pct` | float | `0.0` | Regime filter — refuse entries when ATR% is above this threshold (chaotic market). |
 | `scalp-mode.macd-peak-exit` | bool | `false` | Exits in profit when MACD histogram rolls over for 3 consecutive bars. |
