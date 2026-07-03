@@ -9,6 +9,7 @@ import (
 	"github.com/urfave/cli/v2"
 	"github.com/wferreirauy/binance-bot/config"
 	"github.com/wferreirauy/binance-bot/server"
+	"github.com/wferreirauy/binance-bot/storage"
 	"github.com/wferreirauy/binance-bot/strategy"
 	"github.com/wferreirauy/binance-bot/tui"
 )
@@ -16,7 +17,7 @@ import (
 func main() {
 	app := &cli.App{
 		Name:     "binance-bot",
-		Version:  "v0.22.6",
+		Version:  "v0.23.0",
 		Compiled: time.Now(),
 		Authors: []*cli.Author{
 			{
@@ -380,6 +381,7 @@ func main() {
 	}
 
 	tui.Version = app.Version
+	storage.SetAppVersion(app.Version)
 	if err := app.Run(os.Args); err != nil {
 		log.Fatal(err)
 	}

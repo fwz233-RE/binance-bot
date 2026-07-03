@@ -5,7 +5,7 @@
 
 ## Features
 
-- **USDT-M Futures** — `futures-trade` opens leveraged long/short positions on Binance perpetual futures with isolated/crossed margin, configurable leverage, and reduce-only exits with relentless retry. v0.21.0 adds mark-price exit pricing, an HTF trend gate for entry direction, tendency evaluation on `tendency.interval`, and a funding-rate entry filter
+- **USDT-M Futures** — `futures-trade` opens leveraged long/short positions on Binance perpetual futures with isolated/crossed margin, configurable leverage, and reduce-only exits with relentless retry. v0.21.0 adds mark-price exit pricing, an HTF trend gate for entry direction, tendency evaluation on `tendency.interval`, and a funding-rate entry filter. v0.23.0 makes the session crash-safe: startup reconciliation adopts positions the exchange already holds, the operation counter survives restarts, and shutdown closes and journals any open position
 - **24/7 Infinite Mode** — Set `--operations 0` to run continuously until manually stopped; the default remains 100 operations per session
 - **Multi-Instance** — Run one process per ticker from the same directory: per-ticker log and journal files, aggregated history API, and rate-limit backoff (429/418/-1003 with Retry-After) on the shared IP weight pool
 - **Server-Time Sync** — Continuously compensates local clock drift against Binance server time (min-RTT sampling), preventing `-1021` timestamp rejections on signed requests
@@ -253,6 +253,19 @@ rollover once fees are covered. Leverage and margin type come from the
 `futures` config section. **Orders go to the live exchange and trade real
 funds.**
 
+The session is crash-safe on both ends. On startup the bot **reconciles**
+with the exchange: a position already held for the symbol (e.g. after a
+crash or kill) is adopted — direction, quantity and entry price come from
+the exchange, identity metadata (op ID, entry time) from the journal's
+unpaired entry record — and its exit is managed before any new entry is
+scanned. The journal's `operation` counter continues across restarts. On
+shutdown (dashboard `q`/`Ctrl-C`, `SIGINT`, `SIGTERM`) any open position is
+closed with reduce-only orders and journaled with reason
+`futures-shutdown` — a leveraged position never outlives its exit
+management. Every journal record now carries `version` and `config_hash`
+so live results can be grouped by the exact build and parameter set that
+produced them.
+
 ```bash
 binance-bot -f binance-config.yml futures-trade -t BTC/USDT -a 0.002 -sl 1.0 -tp 1.5 -rp 2 -ra 3 -o 0 -d auto
 ```
@@ -320,7 +333,7 @@ Isolation guarantees:
      binance-bot [global options] command <command args>
 
   VERSION:
-     v0.22.6
+     v0.23.0
 
   AUTHOR:
      Walter Ferreira <wferreirauy@gmail.com>

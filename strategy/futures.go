@@ -87,6 +87,12 @@ func FuturesTrade(
 		dash.SetFileLogger(fl)
 	}
 
+	// The session owns startup reconciliation and shutdown: it must exist
+	// before the TUI runs so both the signal handler and the post-TUI path
+	// can close a live position and journal the exit.
+	session := newFuturesSession(fc, cfg, ticker, 0)
+	session.watchSignals(dash)
+
 	go func() {
 		defer dash.Stop()
 		dash.SetRefreshInterval(refreshInterval)
@@ -97,12 +103,15 @@ func FuturesTrade(
 		dash.LogInfo("[red::b]FUTURES MAINNET[-] — real funds and liquidation risk")
 		logStartupStatus(dash, cfg, aiOrch)
 		futuresSetup(dash, fc, cfg, ticker)
-		futuresTradeLoop(dash, fc, cfg, aiOrch, symbol, ticker, scoin, dcoin, qty, stopLoss, takeProfit, roundPrice, roundAmount, max_ops, refreshInterval, direction)
+		futuresTradeLoop(dash, fc, cfg, aiOrch, session, symbol, ticker, scoin, dcoin, qty, stopLoss, takeProfit, roundPrice, roundAmount, max_ops, refreshInterval, direction)
 	}()
 
 	if err := dash.Run(); err != nil {
 		log.Fatalf("TUI error: %v", err)
 	}
+	// TUI quit (q / Ctrl-C in the dashboard): same shutdown as SIGINT — a
+	// leveraged position must never outlive its exit management.
+	session.shutdown()
 }
 
 // futuresSetup applies leverage and margin type once per session, then
@@ -241,6 +250,7 @@ func futuresTradeLoop(
 	fc *exchange.FuturesClient,
 	cfg *config.Config,
 	aiOrch *ai.Orchestrator,
+	session *futuresSession,
 	symbol, ticker, scoin, dcoin string,
 	qty, stopLoss, takeProfit float64,
 	roundPrice, roundAmount, max_ops uint,
@@ -249,12 +259,34 @@ func futuresTradeLoop(
 ) {
 	period := cfg.HistoricalPrices.Period
 	interval := cfg.HistoricalPrices.Interval
-	var operation = 1
 	var consecutiveLosses int
+
+	// Continue the journal's operation sequence instead of resetting to 1:
+	// counter resets made per-op analysis ambiguous across restarts.
+	operation := 1
+	if last := lastJournalOperation(cfg, ticker); last > 0 {
+		operation = last + 1
+	}
 
 	// Round-trip taker fees as % of notional (~% of price move). Every exit
 	// decision must clear this floor or a "profitable" close is a net loss.
 	feeRoundTrip := futuresRoundTripFeePct(dash, fc, cfg, ticker)
+	session.setFee(feeRoundTrip)
+
+	// Adopt a position the exchange already holds (crash/kill recovery):
+	// manage its exit first — scanning new entries with an unmanaged
+	// leveraged position open is the one state this bot must never be in.
+	if adopted := reconcileFuturesPosition(dash, fc, cfg, ticker); adopted != nil {
+		dash.SetOperation(operation)
+		session.setOpen(*adopted)
+		dash.SetPhase("MONITORING EXIT")
+		_, netPnL := futuresExitLoop(dash, fc, cfg, aiOrch, ticker, scoin, dcoin, *adopted, stopLoss, takeProfit, roundPrice, roundAmount, refreshInterval, feeRoundTrip)
+		session.clear()
+		if netPnL < 0 {
+			consecutiveLosses++
+		}
+		operation++
+	}
 
 	// max_ops == 0 means run until manually stopped (24/7 mode)
 	for max_ops == 0 || operation <= int(max_ops) {
@@ -493,6 +525,7 @@ func futuresTradeLoop(
 				Quantity: qty, Price: op.EntryPrice, Reason: "futures-entry",
 				Direction: op.direction(), Operation: operation, OpID: op.ID,
 			})
+			session.setOpen(op)
 			break
 		}
 
@@ -505,6 +538,7 @@ func futuresTradeLoop(
 		//// EXIT: monitor TP / SL / trailing; close with reduceOnly ////
 		dash.SetPhase("MONITORING EXIT")
 		_, netPnL := futuresExitLoop(dash, fc, cfg, aiOrch, ticker, scoin, dcoin, op, stopLoss, takeProfit, roundPrice, roundAmount, refreshInterval, feeRoundTrip)
+		session.clear()
 
 		// Loss cooldown keys off the realized outcome, not the exit
 		// mechanism: a profitable break-even "stop" is not a loss, and a

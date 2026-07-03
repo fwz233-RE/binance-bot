@@ -47,6 +47,11 @@ type TradeRecord struct {
 	FeePct     float64 `json:"fee_pct,omitempty"`
 	HoldSecs   float64 `json:"hold_secs,omitempty"`
 	OpID       string  `json:"op_id,omitempty"`
+	// Provenance fields: which build and effective config produced this
+	// record. Live parameter iteration is only measurable when every trade
+	// can be grouped by the exact version/config that generated it.
+	Version    string `json:"version,omitempty"`
+	ConfigHash string `json:"config_hash,omitempty"`
 }
 
 type ScoutRecord struct {
@@ -85,9 +90,21 @@ func (s *Store) Dir() string {
 	return s.dir
 }
 
+// appVersion stamps every trade record with the build that produced it.
+// Set once from main; empty means an untagged build.
+var appVersion string
+
+// SetAppVersion registers the running build's version for record stamping.
+func SetAppVersion(version string) {
+	appVersion = version
+}
+
 func (s *Store) AppendTrade(record TradeRecord) error {
 	if record.Time.IsZero() {
 		record.Time = time.Now()
+	}
+	if record.Version == "" {
+		record.Version = appVersion
 	}
 	return s.appendJSONL(tradesFileFor(record.Symbol), record)
 }

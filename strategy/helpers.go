@@ -1,7 +1,9 @@
 package strategy
 
 import (
+	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"os"
 	"reflect"
@@ -254,7 +256,35 @@ func recordTrade(cfg *config.Config, record storage.TradeRecord) {
 	if store == nil {
 		return
 	}
-	_ = store.AppendTrade(record)
+	if record.ConfigHash == "" {
+		record.ConfigHash = effectiveConfigHash(cfg)
+	}
+	// The journal is the only ground truth for live P&L analysis — a silent
+	// write failure poisons every downstream metric.
+	if err := store.AppendTrade(record); err != nil {
+		log.Printf("journal: append trade failed: %v", err)
+	}
+}
+
+// effectiveConfigHash fingerprints the *effective* config (post-defaults, not
+// the file bytes) so journal records can be grouped by the parameter set that
+// produced them. Cached: the config is immutable for the process lifetime.
+var (
+	configHashOnce  sync.Once
+	configHashValue string
+)
+
+func effectiveConfigHash(cfg *config.Config) string {
+	configHashOnce.Do(func() {
+		data, err := json.Marshal(cfg)
+		if err != nil {
+			return
+		}
+		h := fnv.New32a()
+		_, _ = h.Write(data)
+		configHashValue = fmt.Sprintf("%08x", h.Sum32())
+	})
+	return configHashValue
 }
 
 // updateDashAI converts an ai.ConsensusResult into tui.AIConsensusData and updates the dashboard.
