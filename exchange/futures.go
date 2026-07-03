@@ -56,6 +56,10 @@ func NewFuturesClient() *FuturesClient {
 type FuturesAPIError struct {
 	Code int    `json:"code"`
 	Msg  string `json:"msg"`
+	// HTTPStatus and RetryAfter carry transport-level rate-limit context;
+	// they are not part of Binance's JSON payload.
+	HTTPStatus int           `json:"-"`
+	RetryAfter time.Duration `json:"-"`
 }
 
 func (e *FuturesAPIError) Error() string {
@@ -91,13 +95,40 @@ func errorsAs(err error, target **FuturesAPIError) bool {
 	return false
 }
 
-// request performs one REST call. Signed requests get a drift-compensated
-// timestamp and an HMAC-SHA256 signature, per Binance signing rules.
+// request performs one REST call with rate-limit protection: HTTP 429/418 and
+// code -1003 responses are retried with exponential backoff honoring
+// Retry-After. Several instances sharing one IP weight pool then degrade
+// gracefully instead of hammering Binance into an IP ban.
 func (c *FuturesClient) request(method, path string, params url.Values, signed bool) ([]byte, error) {
+	backoff := 2 * time.Second
+	for attempt := 0; ; attempt++ {
+		body, err := c.attempt(method, path, params, signed)
+		if err == nil {
+			return body, nil
+		}
+		retryAfter, limited := rateLimitDelay(err)
+		if !limited || attempt >= 4 {
+			return nil, err
+		}
+		wait := backoff
+		if retryAfter > wait {
+			wait = retryAfter
+		}
+		time.Sleep(wait)
+		backoff *= 2
+	}
+}
+
+// attempt performs a single REST call. Signed requests get a fresh
+// drift-compensated timestamp and an HMAC-SHA256 signature per attempt,
+// per Binance signing rules.
+func (c *FuturesClient) attempt(method, path string, params url.Values, signed bool) ([]byte, error) {
 	if params == nil {
 		params = url.Values{}
 	}
 	if signed {
+		// A retry re-signs: the previous signature must not be part of the payload.
+		params.Del("signature")
 		// local minus offset ≈ Binance server clock
 		ts := time.Now().UnixMilli() - timeOffset.Load()
 		params.Set("timestamp", strconv.FormatInt(ts, 10))
@@ -133,13 +164,43 @@ func (c *FuturesClient) request(method, path string, params url.Values, signed b
 		return nil, fmt.Errorf("futures: read response: %w", err)
 	}
 	if resp.StatusCode >= 400 {
+		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
 		var apiErr FuturesAPIError
 		if json.Unmarshal(body, &apiErr) == nil && apiErr.Code != 0 {
+			apiErr.HTTPStatus = resp.StatusCode
+			apiErr.RetryAfter = retryAfter
 			return nil, &apiErr
+		}
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == 418 {
+			return nil, &FuturesAPIError{
+				Msg: string(body), HTTPStatus: resp.StatusCode, RetryAfter: retryAfter,
+			}
 		}
 		return nil, fmt.Errorf("futures: %s %s: HTTP %d: %s", method, path, resp.StatusCode, string(body))
 	}
 	return body, nil
+}
+
+// rateLimitDelay reports whether err is a rate-limit response and the server's
+// requested wait, if any. 429 = request-weight exceeded, 418 = IP auto-ban
+// after ignoring 429s, -1003 = too many requests (payload code).
+func rateLimitDelay(err error) (time.Duration, bool) {
+	var apiErr *FuturesAPIError
+	if !errorsAs(err, &apiErr) {
+		return 0, false
+	}
+	limited := apiErr.HTTPStatus == http.StatusTooManyRequests ||
+		apiErr.HTTPStatus == 418 ||
+		apiErr.Code == -1003
+	return apiErr.RetryAfter, limited
+}
+
+func parseRetryAfter(v string) time.Duration {
+	secs, err := strconv.Atoi(v)
+	if err != nil || secs <= 0 {
+		return 0
+	}
+	return time.Duration(secs) * time.Second
 }
 
 // FuturesKlines fetches OHLCV candles from /fapi/v1/klines (public endpoint).

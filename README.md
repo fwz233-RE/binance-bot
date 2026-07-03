@@ -7,6 +7,7 @@
 
 - **USDT-M Futures** — `futures-trade` opens leveraged long/short positions on Binance perpetual futures with isolated/crossed margin, configurable leverage, and reduce-only exits with relentless retry. v0.21.0 adds mark-price exit pricing, an HTF trend gate for entry direction, tendency evaluation on `tendency.interval`, and a funding-rate entry filter
 - **24/7 Infinite Mode** — Set `--operations 0` to run continuously until manually stopped; the default remains 100 operations per session
+- **Multi-Instance** — Run one process per ticker from the same directory: per-ticker log and journal files, aggregated history API, and rate-limit backoff (429/418/-1003 with Retry-After) on the shared IP weight pool
 - **Server-Time Sync** — Continuously compensates local clock drift against Binance server time (min-RTT sampling), preventing `-1021` timestamp rejections on signed requests
 - **Auto Trade** — Automatically detects market tendency and switches between bull/bear strategies per operation; supports forced strategy mode and waits when the account cannot fund the detected side
 - **Bull Trade** — Buy-low-sell-high strategy for uptrending markets
@@ -266,10 +267,34 @@ binance-bot -f binance-config.yml futures-trade -t BTC/USDT -a 0.002 -sl 1.0 -tp
 > position margin. Keep leverage low and start with minimal quantities.
 
 Every entry and every exit (take-profit, stop-loss, trailing stop, time-stop,
-MACD-peak) is journaled to `data-dir/trades.jsonl`. Exit records are
+MACD-peak) is journaled to `data-dir/trades-<TICKER>.jsonl` (one file per
+symbol). Exit records are
 self-sufficient for P&L analysis: they carry `direction` (long/short),
 `entry_price`, gross `pnl_pct`, fee-adjusted `pnl_net_pct`, `fee_pct`,
 holding time `hold_secs`, and an `op_id` that pairs each exit with its entry.
+
+#### Running Multiple Instances (one per ticker)
+
+Each trading command drives exactly one symbol, so running several coins means
+running several processes from the same directory — no extra setup:
+
+```bash
+binance-bot -f binance-config.yml futures-trade -t DOGE/USDT -a 134 -rp 5 -ra 0 -o 0 &
+binance-bot -f binance-config.yml futures-trade -t ETH/USDT -a 0.01 -rp 2 -ra 3 -o 0 &
+```
+
+Isolation guarantees:
+
+- Logs go to `binance-bot-<TICKER>.log` and trade journals to
+  `data-dir/trades-<TICKER>.jsonl`, one file per instance.
+- The `serve` command aggregates all `trades*.jsonl` files into `/api/trades`;
+  run only one `serve` process per port.
+- All instances behind one IP share Binance's request-weight pool. The futures
+  client backs off exponentially on HTTP 429/418 and code -1003, honoring
+  `Retry-After`, but keep `refresh-interval` at 10s or higher when running
+  many instances.
+- Instances share the account balance: size `--amount` so the combined margin
+  requirements fit the wallet, or entries will be skipped.
 
 ### Help Commands
 
@@ -287,7 +312,7 @@ holding time `hold_secs`, and an `op_id` that pairs each exit with its entry.
      binance-bot [global options] command <command args>
 
   VERSION:
-     v0.21.0
+     v0.22.0
 
   AUTHOR:
      Walter Ferreira <wferreirauy@gmail.com>
@@ -380,7 +405,7 @@ refresh-interval: 10
 | Field | Type | Sample | Description |
 |-------|------|--------|-------------|
 | `base-url` | string | `https://api1.binance.com` | Binance API base URL. Leave empty to use the built-in production endpoint; use `https://testnet.binance.vision` for testnet. |
-| `data-dir` | string | `.binance-bot` | Directory used for persisted trade history, scout history, value records, and rotation state. |
+| `data-dir` | string | `.binance-bot` | Directory used for persisted trade history (`trades-<TICKER>.jsonl` per symbol), scout history, value records, and rotation state. |
 | `historical-prices.period` | int | `100` | Number of candles fetched for indicators and backtests. |
 | `historical-prices.interval` | string | `1m` | Candle interval used for the main OHLCV fetch. |
 | `refresh-interval` | int | `10` | Seconds between live price polls and indicator recalculation. |
@@ -695,7 +720,13 @@ Backtests use recent Binance candles and append simulated trade records. The API
 
 ### File Logging
 
-All log levels (orders, info, errors) are automatically written to `binance-bot.log` in the working directory, alongside the TUI display. Color tags are stripped before writing. The file is opened in append mode so logs accumulate across sessions.
+All log levels (orders, info, errors) are automatically written to a
+per-session log file in the working directory, alongside the TUI display:
+`binance-bot-<TICKER>.log` for trading sessions (e.g.
+`binance-bot-DOGEUSDT.log`) and `binance-bot-topgainers.log` for the gainers
+monitor. Color tags are stripped before writing. Files are opened in append
+mode so logs accumulate across sessions, and concurrent instances never
+interleave lines in one file.
 
 ```
 2026-04-07 12:30:00 [INFO]  Scalp entry: score 5/6 (min 5)

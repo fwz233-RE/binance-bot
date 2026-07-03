@@ -79,7 +79,7 @@ func FuturesTrade(
 	dash := tui.NewDashboard(mode, symbol)
 	dash.SetConfig(cfg)
 
-	fl, err := tui.NewFileLogger("binance-bot.log")
+	fl, err := tui.NewFileLogger(sessionLogFile(ticker))
 	if err != nil {
 		log.Printf("Warning: could not open log file: %v", err)
 	} else {

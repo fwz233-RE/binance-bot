@@ -70,7 +70,7 @@ func TopGainers(configFile string) {
 	dash := tui.NewGainersDashboard(quoteAsset, limit, pollInterval)
 
 	// initialize file logger
-	fl, err := tui.NewFileLogger("binance-bot.log")
+	fl, err := tui.NewFileLogger(sessionLogFile("topgainers"))
 	if err != nil {
 		log.Printf("Warning: could not open log file: %v", err)
 	} else {

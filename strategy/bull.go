@@ -87,7 +87,7 @@ func BullTrade(
 	dash.SetConfig(cfg)
 
 	// initialize file logger
-	fl, err := tui.NewFileLogger("binance-bot.log")
+	fl, err := tui.NewFileLogger(sessionLogFile(symbol))
 	if err != nil {
 		log.Printf("Warning: could not open log file: %v", err)
 	} else {

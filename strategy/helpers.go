@@ -193,6 +193,16 @@ func TradeMarketSell(ticker string, qty, estimatedPrice float64, round uint) (an
 	return order, nil
 }
 
+// sessionLogFile returns a per-session log file name so concurrent instances
+// (one per ticker) never interleave lines in the same file.
+func sessionLogFile(tag string) string {
+	tag = strings.ReplaceAll(tag, "/", "")
+	if tag == "" {
+		return "binance-bot.log"
+	}
+	return "binance-bot-" + tag + ".log"
+}
+
 func dataStore(cfg *config.Config) *storage.Store {
 	if cfg == nil {
 		return nil
