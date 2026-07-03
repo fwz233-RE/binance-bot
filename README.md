@@ -237,9 +237,15 @@ closes them with reduce-only market orders (take-profit, stop-loss, trailing
 stop, time-stop). Exit orders are retried indefinitely — a leveraged position
 is never left unmanaged. Entries are skipped (with a single log line) while
 the futures wallet cannot fund the required margin. Exits are fee-aware: the
-live taker rate is fetched per session, take-profit targets are floored at
-round-trip fees + buffer, time-stop and break-even close at net-zero or
-better, and the dashboard shows both gross and net P&L. When `ai.enabled` is
+live taker rate is fetched per session (falling back to
+`fees.default-taker-pct` when the lookup fails), take-profit targets are
+floored at round-trip fees + buffer, and every net-zero exit gate
+(break-even floor, time-stop, MACD-peak) also clears fees **plus**
+`fees.buffer-pct` — the buffer absorbs the poll gap and market-order
+slippage that previously turned break-even closes into guaranteed
+micro-losses. Entries are refused while ATR% is below the round-trip fee
+(a bar range that cannot pay the fee has no positive expectancy), and the
+dashboard shows both gross and net P&L. When `ai.enabled` is
 set, the same AI multi-agent consensus used by the spot strategies gates
 futures entries (long = BUY approval, short = SELL approval) and confirms
 take-profit exits. The MACD-peak early exit locks gains on histogram
@@ -314,7 +320,7 @@ Isolation guarantees:
      binance-bot [global options] command <command args>
 
   VERSION:
-     v0.22.5
+     v0.22.6
 
   AUTHOR:
      Walter Ferreira <wferreirauy@gmail.com>
@@ -592,13 +598,13 @@ scalp-mode:
 | `scalp-mode.tp-atr-multiplier` | float | `0.0` | If >0, take-profit becomes `max(takeProfit%, mult × ATR%)`. |
 | `scalp-mode.sl-atr-multiplier` | float | `0.0` | If >0, stop-loss becomes `max(stopLoss%, mult × ATR%)`. Overrides `atr-multiplier` when set. |
 | `scalp-mode.time-stop-bars` | int | `0` | Exits flat (P&L≥0 but TP not reached) positions after N closed bars of the trading interval (previously counted refresh ticks). |
-| `scalp-mode.breakeven-atr-mult` | float | `0.0` | Once peak P&L ≥ `max(mult × ATR%, fees + buffer)` **and** current P&L is above the fee floor, pins the exit floor to net zero. The fee-floor arm gate prevents guaranteed micro-loss exits in low-ATR regimes. |
-| `scalp-mode.min-atr-pct` | float | `0.0` | Regime filter — refuse entries when ATR% is below this threshold (dead market). |
+| `scalp-mode.breakeven-atr-mult` | float | `0.0` | Once peak P&L ≥ `max(mult × ATR%, fees + buffer)` **and** current P&L is above the fee floor, pins the exit floor at fees + buffer. The buffered arm gate prevents guaranteed micro-loss exits in low-ATR regimes. |
+| `scalp-mode.min-atr-pct` | float | `0.0` | Regime filter — refuse entries when ATR% is below this threshold (dead market). On futures the effective minimum is never below the round-trip fee. |
 | `scalp-mode.max-atr-pct` | float | `0.0` | Regime filter — refuse entries when ATR% is above this threshold (chaotic market). |
 | `scalp-mode.macd-peak-exit` | bool | `false` | Exits in profit when MACD histogram rolls over for 3 consecutive bars. |
 | `scalp-mode.recent-extreme-bars` | int | `0` | Blocks BULL entries near a recent high (BEAR near recent low) over the given lookback. |
 | `scalp-mode.max-hold-bars` | int | `0` | Unconditional time exit: closes the position after N closed bars regardless of P&L, so losing positions cannot bleed for hours. |
-| `scalp-mode.breakeven-trail-atr-mult` | float | `0.0` | After break-even activates, trails the exit floor at `peak P&L − mult × ATR%` (never below net zero) instead of pinning it at net zero, letting winners run toward TP. |
+| `scalp-mode.breakeven-trail-atr-mult` | float | `0.0` | After break-even activates, trails the exit floor at `peak P&L − mult × ATR%` (never below fees + buffer) instead of pinning it, letting winners run toward TP. |
 | `scalp-mode.reentry-cooldown-bars` | int | `0` | Waits N closed bars after any exit before scanning for re-entry, preventing immediate same-price re-entries that only pay fees. |
 
 ### AI

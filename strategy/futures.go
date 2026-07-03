@@ -145,6 +145,9 @@ func futuresSetup(dash *tui.Dashboard, fc *exchange.FuturesClient, cfg *config.C
 	} else {
 		dash.LogInfo(fmt.Sprintf("[cyan]Futures setup[-] %s margin, leverage %dx", strings.ToUpper(marginType), leverage))
 	}
+	if leverage > 5 {
+		dash.LogError(fmt.Sprintf("HIGH LEVERAGE %dx — P&L thresholds are %% of notional, so margin losses are amplified %dx; keep ≤5x while the strategy's net expectancy is unproven", leverage, leverage))
+	}
 }
 
 // closeFill carries what actually happened when a position was closed: the
@@ -428,6 +431,9 @@ func futuresTradeLoop(
 				ADXStrong: adxStrong, ADXVal: adxVal,
 				CurrentVolume: currentVolume, AvgVolume: avgVolume,
 				ATRVal: atrVal, Price: price,
+				// Refuse entries when the per-bar range cannot even pay the
+				// round-trip fee — no signal survives a negative cost basis.
+				MinATRFloorPct: feeRoundTrip,
 			})
 			if eval.RegimeBlocked || eval.ExtremeBlocked || eval.Score < eval.MinScore {
 				time.Sleep(refreshInterval)
@@ -572,6 +578,18 @@ func futuresExitLoop(
 	}
 	pnlPct := op.pnlPct
 
+	// Every "net-zero" exit gate (break-even floor, time-stop, MACD-peak)
+	// shares this floor: fees plus the configured buffer. The floor is
+	// evaluated at poll time, so by the time the market order fills, the
+	// poll gap and taker slippage have already eaten past the line — a
+	// floor pinned exactly at the fee converts break-even exits into
+	// guaranteed micro-losses (observed live: 12 of 15 positive-gross
+	// "futures-sl" exits closed net-negative).
+	feeFloor := feeRoundTrip
+	if feeRoundTrip > 0 {
+		feeFloor += cfg.Fees.BufferPct
+	}
+
 	// Bars are counted as *closed klines* derived from wall-clock time; the
 	// legacy per-tick counter (one "bar" per refresh) only remains as a
 	// fallback for unknown interval tokens.
@@ -671,25 +689,27 @@ func futuresExitLoop(
 			// in low-ATR regimes the pure ATR threshold sits below the floor
 			// and arming would realize a guaranteed micro-loss immediately.
 			armAt := cfg.ScalpMode.BreakevenATRMult * atrPct
-			if minArm := feeRoundTrip + cfg.Fees.BufferPct; armAt < minArm {
-				armAt = minArm
+			if armAt < feeFloor {
+				armAt = feeFloor
 			}
 			// Only arm while the position is currently above the floor.
 			// peakPnL is history — if ATR shrinks later, the threshold can be
 			// met retroactively while the position is already under water,
 			// and arming then would close a losing trade labeled break-even
 			// (seen live: armed at P&L −0.25% and closed on the spot).
-			if peakPnL >= armAt && pnl > feeRoundTrip {
+			if peakPnL >= armAt && pnl > feeFloor {
 				breakevenActive = true
-				dash.LogInfo(fmt.Sprintf("[lime]BREAK-EVEN[-] peak P&L %.2f%% ≥ %.2f%% — exit floor pinned to net zero (fees %.2f%%)", peakPnL, armAt, feeRoundTrip))
+				dash.LogInfo(fmt.Sprintf("[lime]BREAK-EVEN[-] peak P&L %.2f%% ≥ %.2f%% — exit floor pinned at fees+buffer (%.2f%%)", peakPnL, armAt, feeFloor))
 			}
 		}
 		if breakevenActive {
-			// Exit floor after break-even. Legacy: pinned at net zero, which
-			// harvested winners at +fees. With breakeven-trail-atr-mult the
-			// floor trails peak − mult × ATR%, giving winners room to reach TP
-			// while never dropping back below net zero.
-			floor := feeRoundTrip
+			// Exit floor after break-even. Legacy: pinned at the raw fee
+			// line, which realized net micro-losses once the poll gap and
+			// taker slippage were paid; the floor now carries the buffer so
+			// floor-triggered closes still net ≥ 0. With
+			// breakeven-trail-atr-mult it trails peak − mult × ATR%, giving
+			// winners room to reach TP.
+			floor := feeFloor
 			if mult := cfg.ScalpMode.BreakevenTrailATRMult; mult > 0 && atrVal > 0 {
 				atrPct := (atrVal / entryPrice) * 100
 				if trailed := peakPnL - mult*atrPct; trailed > floor {
@@ -722,9 +742,10 @@ func futuresExitLoop(
 			return "ts", recordFuturesExit(cfg, ticker, closeSide, op, fill, exitPrice, feeRoundTrip, "futures-maxhold")
 		}
 
-		// Time-stop for flat positions: only exits once gross P&L at least
-		// covers the fees, so freeing capital never converts flat to loss.
-		if cfg.ScalpMode.TimeStopBars > 0 && barsSinceEntry >= cfg.ScalpMode.TimeStopBars && pnl >= feeRoundTrip && pnl < effectiveTP {
+		// Time-stop for flat positions: only exits once gross P&L clears
+		// fees + buffer, so freeing capital never converts flat to loss
+		// after the market-order slippage is paid.
+		if cfg.ScalpMode.TimeStopBars > 0 && barsSinceEntry >= cfg.ScalpMode.TimeStopBars && pnl >= feeFloor && pnl < effectiveTP {
 			dash.SetPhase("TIME STOP")
 			dash.LogInfo(fmt.Sprintf("[yellow]Time-stop:[-] %d closed bars, P&L %+.2f%% gross / %+.2f%% net (TP not reached)", barsSinceEntry, pnl, pnl-feeRoundTrip))
 			fill := closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[yellow::b]TIME-STOP[-]")
@@ -732,9 +753,9 @@ func futuresExitLoop(
 		}
 
 		// MACD-peak exit: lock gains when histogram rolls over, but only once
-		// gross P&L covers the fees — unlike spot, never converts a micro-win
-		// into a net loss.
-		if pnl >= feeRoundTrip && shouldMACDPeakExit(cfg, macdLine, signalLine, isLong, pnl) {
+		// gross P&L clears fees + buffer — unlike spot, never converts a
+		// micro-win into a net loss.
+		if pnl >= feeFloor && shouldMACDPeakExit(cfg, macdLine, signalLine, isLong, pnl) {
 			dash.SetPhase("MACD PEAK EXIT")
 			dash.LogInfo(fmt.Sprintf("[fuchsia]MACD-peak exit:[-] histogram rolling over, P&L %+.2f%% gross / %+.2f%% net", pnl, pnl-feeRoundTrip))
 			fill := closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[fuchsia::b]MACD-PEAK[-]")
@@ -790,7 +811,10 @@ func futuresExitLoop(
 
 // futuresRoundTripFeePct resolves the taker fee for the symbol and returns the
 // round-trip cost (2 legs) as % of notional. Returns 0 when fees are disabled
-// in config; falls back to 0.05%/leg when the commission API is unavailable.
+// in config; when the commission API is unavailable it falls back to
+// fees.default-taker-pct (or the 0.05%/leg VIP0 default), taking whichever is
+// higher — underestimating the fee here would push every exit floor below the
+// real cost line.
 func futuresRoundTripFeePct(dash *tui.Dashboard, fc *exchange.FuturesClient, cfg *config.Config, ticker string) float64 {
 	if cfg != nil && !cfg.Fees.Enabled {
 		return 0
@@ -798,6 +822,9 @@ func futuresRoundTripFeePct(dash *tui.Dashboard, fc *exchange.FuturesClient, cfg
 	taker, err := fc.FuturesTakerFeePct(ticker)
 	if err != nil || taker <= 0 {
 		taker = 0.05 // Binance USDT-M VIP0 taker default
+		if cfg != nil && cfg.Fees.DefaultTakerPct > taker {
+			taker = cfg.Fees.DefaultTakerPct
+		}
 		if err != nil {
 			dash.LogError(fmt.Sprintf("Fee lookup failed, assuming %.3f%%/leg: %v", taker, err))
 		}
