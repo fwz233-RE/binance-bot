@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -134,9 +135,11 @@ func (d *GainersDashboard) UpdateGainers(rows []GainerRow) {
 	})
 }
 
-// SetFileLogger attaches a file logger so log messages are also written to disk.
+// SetFileLogger attaches a file logger so log messages are also written to
+// disk, and reroutes global `log` output away from the tcell-owned terminal.
 func (d *GainersDashboard) SetFileLogger(fl *FileLogger) {
 	d.fileLogger = fl
+	log.SetOutput(fl)
 }
 
 // LogInfo appends an info message to the log panel.

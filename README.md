@@ -314,7 +314,7 @@ Isolation guarantees:
      binance-bot [global options] command <command args>
 
   VERSION:
-     v0.22.3
+     v0.22.4
 
   AUTHOR:
      Walter Ferreira <wferreirauy@gmail.com>
@@ -729,6 +729,11 @@ per-session log file in the working directory, alongside the TUI display:
 monitor. Color tags are stripped before writing. Files are opened in append
 mode so logs accumulate across sessions, and concurrent instances never
 interleave lines in one file.
+
+While the TUI owns the terminal, the global Go `log` output (transient AI and
+exchange errors, quantity adjustments) is redirected into the same session log
+file — nothing writes to stdout/stderr behind tcell's back, which previously
+corrupted the display with overlapping stale text.
 
 ```
 2026-04-07 12:30:00 [INFO]  Scalp entry: score 5/6 (min 5)

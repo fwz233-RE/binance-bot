@@ -2,6 +2,7 @@ package strategy
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"reflect"
 	"strconv"
@@ -94,7 +95,7 @@ func tryPlaceOrder(label, symbol, side string, qty, price float64, filters *exch
 	if reducedQty <= 0 || reducedQty >= qty {
 		return nil, qty, err
 	}
-	fmt.Printf("%s qty reduced from %.8f to %.8f to fit %.8f %s available (buffer %.2f%%, %s)\n",
+	log.Printf("%s qty reduced from %.8f to %.8f to fit %.8f %s available (buffer %.2f%%, %s)",
 		label, qty, reducedQty, available, asset, currentBuyBackBufferPct(), symbol)
 	order, err = placeFn(reducedQty)
 	if err != nil {
@@ -114,7 +115,7 @@ func TradeBuy(ticker string, qty, basePrice, buyFactor float64, round uint) (any
 	}
 	adjQty, adjusted := exchange.AdjustQuantity(qty, buyPrice, filters, round)
 	if adjusted {
-		fmt.Printf("BUY qty adjusted from %.8f to %.8f to meet exchange filters (minNotional=%.2f)\n", qty, adjQty, filters.MinNotional)
+		log.Printf("BUY qty adjusted from %.8f to %.8f to meet exchange filters (minNotional=%.2f)", qty, adjQty, filters.MinNotional)
 	}
 
 	order, _, err := tryPlaceOrder("BUY", tick, "BUY", adjQty, buyPrice, filters, round, func(q float64) (any, error) {
@@ -137,7 +138,7 @@ func TradeSell(ticker string, qty, basePrice, sellFactor float64, round uint) (a
 	}
 	adjQty, adjusted := exchange.AdjustQuantity(qty, sellPrice, filters, round)
 	if adjusted {
-		fmt.Printf("SELL qty adjusted from %.8f to %.8f to meet exchange filters (minNotional=%.2f)\n", qty, adjQty, filters.MinNotional)
+		log.Printf("SELL qty adjusted from %.8f to %.8f to meet exchange filters (minNotional=%.2f)", qty, adjQty, filters.MinNotional)
 	}
 
 	order, _, err := tryPlaceOrder("SELL", tick, "SELL", adjQty, sellPrice, filters, round, func(q float64) (any, error) {
@@ -159,7 +160,7 @@ func TradeMarketBuy(ticker string, qty, estimatedPrice float64, round uint) (any
 	}
 	adjQty, adjusted := exchange.AdjustQuantity(qty, estimatedPrice, filters, round)
 	if adjusted {
-		fmt.Printf("MARKET BUY qty adjusted from %.8f to %.8f to meet exchange filters (minNotional=%.2f)\n", qty, adjQty, filters.MinNotional)
+		log.Printf("MARKET BUY qty adjusted from %.8f to %.8f to meet exchange filters (minNotional=%.2f)", qty, adjQty, filters.MinNotional)
 	}
 
 	order, _, err := tryPlaceOrder("MARKET BUY", tick, "BUY", adjQty, estimatedPrice, filters, round, func(q float64) (any, error) {
@@ -181,7 +182,7 @@ func TradeMarketSell(ticker string, qty, estimatedPrice float64, round uint) (an
 	}
 	adjQty, adjusted := exchange.AdjustQuantity(qty, estimatedPrice, filters, round)
 	if adjusted {
-		fmt.Printf("MARKET SELL qty adjusted from %.8f to %.8f to meet exchange filters (minNotional=%.2f)\n", qty, adjQty, filters.MinNotional)
+		log.Printf("MARKET SELL qty adjusted from %.8f to %.8f to meet exchange filters (minNotional=%.2f)", qty, adjQty, filters.MinNotional)
 	}
 
 	order, _, err := tryPlaceOrder("MARKET SELL", tick, "SELL", adjQty, estimatedPrice, filters, round, func(q float64) (any, error) {
