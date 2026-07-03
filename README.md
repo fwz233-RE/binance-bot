@@ -314,7 +314,7 @@ Isolation guarantees:
      binance-bot [global options] command <command args>
 
   VERSION:
-     v0.22.1
+     v0.22.2
 
   AUTHOR:
      Walter Ferreira <wferreirauy@gmail.com>

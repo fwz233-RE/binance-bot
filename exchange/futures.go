@@ -1,6 +1,7 @@
 package exchange
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -95,18 +96,29 @@ func errorsAs(err error, target **FuturesAPIError) bool {
 	return false
 }
 
-// request performs one REST call with rate-limit protection: HTTP 429/418 and
-// code -1003 responses are retried with exponential backoff honoring
-// Retry-After. Only idempotent GETs are auto-retried — order placement fails
-// fast so the strategy layer re-evaluates instead of filling a stale signal
-// tens of seconds later. Several instances sharing one IP weight pool then
-// degrade gracefully instead of hammering Binance into an IP ban.
+// request performs one REST call with two safety nets:
+//   - Rate limits: HTTP 429/418 and code -1003 are retried with exponential
+//     backoff honoring Retry-After, but only for idempotent GETs — order
+//     placement fails fast so the strategy layer re-evaluates instead of
+//     filling a stale signal tens of seconds later.
+//   - Timestamp rejection: code -1021 means the request was rejected before
+//     execution (cold-connection latency or clock drift), so any method is
+//     safe to retry once after forcing a server-time resync; each attempt
+//     re-signs with a fresh timestamp.
 func (c *FuturesClient) request(method, path string, params url.Values, signed bool) ([]byte, error) {
 	backoff := 2 * time.Second
+	timestampRetried := false
 	for attempt := 0; ; attempt++ {
 		body, err := c.attempt(method, path, params, signed)
 		if err == nil {
 			return body, nil
+		}
+		if signed && !timestampRetried && IsFuturesCode(err, -1021) {
+			timestampRetried = true
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			_, _ = SyncServerTime(ctx) // best-effort; retry re-signs either way
+			cancel()
+			continue
 		}
 		retryAfter, limited := rateLimitDelay(err)
 		if !limited || method != http.MethodGet || attempt >= 4 {
