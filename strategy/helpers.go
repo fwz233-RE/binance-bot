@@ -1,7 +1,10 @@
 package strategy
 
 import (
+	"encoding/json"
 	"fmt"
+	"hash/fnv"
+	"log"
 	"os"
 	"reflect"
 	"strconv"
@@ -94,7 +97,7 @@ func tryPlaceOrder(label, symbol, side string, qty, price float64, filters *exch
 	if reducedQty <= 0 || reducedQty >= qty {
 		return nil, qty, err
 	}
-	fmt.Printf("%s qty reduced from %.8f to %.8f to fit %.8f %s available (buffer %.2f%%, %s)\n",
+	log.Printf("%s qty reduced from %.8f to %.8f to fit %.8f %s available (buffer %.2f%%, %s)",
 		label, qty, reducedQty, available, asset, currentBuyBackBufferPct(), symbol)
 	order, err = placeFn(reducedQty)
 	if err != nil {
@@ -114,7 +117,7 @@ func TradeBuy(ticker string, qty, basePrice, buyFactor float64, round uint) (any
 	}
 	adjQty, adjusted := exchange.AdjustQuantity(qty, buyPrice, filters, round)
 	if adjusted {
-		fmt.Printf("BUY qty adjusted from %.8f to %.8f to meet exchange filters (minNotional=%.2f)\n", qty, adjQty, filters.MinNotional)
+		log.Printf("BUY qty adjusted from %.8f to %.8f to meet exchange filters (minNotional=%.2f)", qty, adjQty, filters.MinNotional)
 	}
 
 	order, _, err := tryPlaceOrder("BUY", tick, "BUY", adjQty, buyPrice, filters, round, func(q float64) (any, error) {
@@ -137,7 +140,7 @@ func TradeSell(ticker string, qty, basePrice, sellFactor float64, round uint) (a
 	}
 	adjQty, adjusted := exchange.AdjustQuantity(qty, sellPrice, filters, round)
 	if adjusted {
-		fmt.Printf("SELL qty adjusted from %.8f to %.8f to meet exchange filters (minNotional=%.2f)\n", qty, adjQty, filters.MinNotional)
+		log.Printf("SELL qty adjusted from %.8f to %.8f to meet exchange filters (minNotional=%.2f)", qty, adjQty, filters.MinNotional)
 	}
 
 	order, _, err := tryPlaceOrder("SELL", tick, "SELL", adjQty, sellPrice, filters, round, func(q float64) (any, error) {
@@ -159,7 +162,7 @@ func TradeMarketBuy(ticker string, qty, estimatedPrice float64, round uint) (any
 	}
 	adjQty, adjusted := exchange.AdjustQuantity(qty, estimatedPrice, filters, round)
 	if adjusted {
-		fmt.Printf("MARKET BUY qty adjusted from %.8f to %.8f to meet exchange filters (minNotional=%.2f)\n", qty, adjQty, filters.MinNotional)
+		log.Printf("MARKET BUY qty adjusted from %.8f to %.8f to meet exchange filters (minNotional=%.2f)", qty, adjQty, filters.MinNotional)
 	}
 
 	order, _, err := tryPlaceOrder("MARKET BUY", tick, "BUY", adjQty, estimatedPrice, filters, round, func(q float64) (any, error) {
@@ -181,7 +184,7 @@ func TradeMarketSell(ticker string, qty, estimatedPrice float64, round uint) (an
 	}
 	adjQty, adjusted := exchange.AdjustQuantity(qty, estimatedPrice, filters, round)
 	if adjusted {
-		fmt.Printf("MARKET SELL qty adjusted from %.8f to %.8f to meet exchange filters (minNotional=%.2f)\n", qty, adjQty, filters.MinNotional)
+		log.Printf("MARKET SELL qty adjusted from %.8f to %.8f to meet exchange filters (minNotional=%.2f)", qty, adjQty, filters.MinNotional)
 	}
 
 	order, _, err := tryPlaceOrder("MARKET SELL", tick, "SELL", adjQty, estimatedPrice, filters, round, func(q float64) (any, error) {
@@ -191,6 +194,16 @@ func TradeMarketSell(ticker string, qty, estimatedPrice float64, round uint) (an
 		return nil, err
 	}
 	return order, nil
+}
+
+// sessionLogFile returns a per-session log file name so concurrent instances
+// (one per ticker) never interleave lines in the same file.
+func sessionLogFile(tag string) string {
+	tag = strings.ReplaceAll(tag, "/", "")
+	if tag == "" {
+		return "binance-bot.log"
+	}
+	return "binance-bot-" + tag + ".log"
 }
 
 func dataStore(cfg *config.Config) *storage.Store {
@@ -243,7 +256,35 @@ func recordTrade(cfg *config.Config, record storage.TradeRecord) {
 	if store == nil {
 		return
 	}
-	_ = store.AppendTrade(record)
+	if record.ConfigHash == "" {
+		record.ConfigHash = effectiveConfigHash(cfg)
+	}
+	// The journal is the only ground truth for live P&L analysis — a silent
+	// write failure poisons every downstream metric.
+	if err := store.AppendTrade(record); err != nil {
+		log.Printf("journal: append trade failed: %v", err)
+	}
+}
+
+// effectiveConfigHash fingerprints the *effective* config (post-defaults, not
+// the file bytes) so journal records can be grouped by the parameter set that
+// produced them. Cached: the config is immutable for the process lifetime.
+var (
+	configHashOnce  sync.Once
+	configHashValue string
+)
+
+func effectiveConfigHash(cfg *config.Config) string {
+	configHashOnce.Do(func() {
+		data, err := json.Marshal(cfg)
+		if err != nil {
+			return
+		}
+		h := fnv.New32a()
+		_, _ = h.Write(data)
+		configHashValue = fmt.Sprintf("%08x", h.Sum32())
+	})
+	return configHashValue
 }
 
 // updateDashAI converts an ai.ConsensusResult into tui.AIConsensusData and updates the dashboard.
@@ -333,6 +374,11 @@ func waitOrderFilled(dash *tui.Dashboard, ticker string, orderId int64, filledMs
 		}
 		if result.Order != nil {
 			price, _ := strconv.ParseFloat(result.Order.Price, 64)
+			if price == 0 && result.ExecutedQty > 0 && result.CumulativeQuoteQty > 0 {
+				// Market orders report price 0; derive the average fill price
+				// so the journal stays self-sufficient for P&L math.
+				price = result.CumulativeQuoteQty / result.ExecutedQty
+			}
 			recordTrade(cfg, storage.TradeRecord{
 				Symbol:         ticker,
 				Side:           result.Order.Side,

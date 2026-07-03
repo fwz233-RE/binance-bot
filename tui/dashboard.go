@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -776,9 +777,14 @@ func (d *Dashboard) UpdateAI(data *AIConsensusData) {
 	})
 }
 
-// SetFileLogger attaches a file logger so log messages are also written to disk.
+// SetFileLogger attaches a file logger so log messages are also written to
+// disk. It also reroutes the global `log` package output (used by ai/ and
+// exchange/ for transient errors) into the same file: while the TUI runs the
+// terminal belongs to tcell, and any direct stdout/stderr write corrupts the
+// screen buffer.
 func (d *Dashboard) SetFileLogger(fl *FileLogger) {
 	d.fileLogger = fl
+	log.SetOutput(fl)
 }
 
 // SetLogThrottleWindow configures how long identical INFO log lines are

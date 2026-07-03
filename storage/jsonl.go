@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -35,6 +37,21 @@ type TradeRecord struct {
 	Operation      int       `json:"operation,omitempty"`
 	ExecutedQty    float64   `json:"executed_qty,omitempty"`
 	PartialHandled bool      `json:"partial_handled,omitempty"`
+	// Self-contained P&L audit fields: exit records link back to their entry
+	// via OpID and carry direction, fees and holding time, so the journal
+	// alone is enough to reconstruct a session without replaying logs.
+	Direction  string  `json:"direction,omitempty"`
+	EntryPrice float64 `json:"entry_price,omitempty"`
+	PnLPct     float64 `json:"pnl_pct,omitempty"`
+	PnLNetPct  float64 `json:"pnl_net_pct,omitempty"`
+	FeePct     float64 `json:"fee_pct,omitempty"`
+	HoldSecs   float64 `json:"hold_secs,omitempty"`
+	OpID       string  `json:"op_id,omitempty"`
+	// Provenance fields: which build and effective config produced this
+	// record. Live parameter iteration is only measurable when every trade
+	// can be grouped by the exact version/config that generated it.
+	Version    string `json:"version,omitempty"`
+	ConfigHash string `json:"config_hash,omitempty"`
 }
 
 type ScoutRecord struct {
@@ -73,11 +90,59 @@ func (s *Store) Dir() string {
 	return s.dir
 }
 
+// appVersion stamps every trade record with the build that produced it.
+// Set once from main; empty means an untagged build.
+var appVersion string
+
+// SetAppVersion registers the running build's version for record stamping.
+func SetAppVersion(version string) {
+	appVersion = version
+}
+
 func (s *Store) AppendTrade(record TradeRecord) error {
 	if record.Time.IsZero() {
 		record.Time = time.Now()
 	}
-	return s.appendJSONL(TradesFile, record)
+	if record.Version == "" {
+		record.Version = appVersion
+	}
+	return s.appendJSONL(tradesFileFor(record.Symbol), record)
+}
+
+// tradesFileFor isolates each symbol's journal in its own file so concurrent
+// bot instances (one per ticker) never share a write target. Records without
+// a symbol keep the legacy shared file.
+func tradesFileFor(symbol string) string {
+	symbol = strings.ReplaceAll(symbol, "/", "")
+	if symbol == "" {
+		return TradesFile
+	}
+	return "trades-" + symbol + ".jsonl"
+}
+
+// ReadTrades aggregates the legacy trades.jsonl plus every per-symbol
+// trades-*.jsonl file, sorted by time, keeping the newest `limit` records.
+func ReadTrades(dir string, limit int) ([]TradeRecord, error) {
+	if dir == "" {
+		dir = ".binance-bot"
+	}
+	paths, err := filepath.Glob(filepath.Join(dir, "trades*.jsonl"))
+	if err != nil {
+		return nil, fmt.Errorf("storage: glob trades files: %w", err)
+	}
+	all := []TradeRecord{}
+	for _, p := range paths {
+		records, err := ReadJSONL[TradeRecord](dir, filepath.Base(p), 0)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, records...)
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].Time.Before(all[j].Time) })
+	if limit > 0 && len(all) > limit {
+		return all[len(all)-limit:], nil
+	}
+	return all, nil
 }
 
 func (s *Store) AppendScout(record ScoutRecord) error {

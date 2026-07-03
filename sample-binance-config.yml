@@ -100,6 +100,10 @@ scalp-mode:
   # max-atr-pct: 0.0               # regime filter: refuse entries above this ATR%
   # macd-peak-exit: false          # exit in profit when MACD histogram rolls over (3-bar peak)
   # recent-extreme-bars: 0         # block BULL near recent high / BEAR near recent low
+  # --- v0.20 exit-state-machine rework (bar = closed kline of historical-prices.interval) ---
+  # max-hold-bars: 0               # close position after N closed bars regardless of P&L (0=off)
+  # breakeven-trail-atr-mult: 0.0  # after break-even, trail exit floor at peak − mult × ATR% instead of pinning at net zero
+  # reentry-cooldown-bars: 0       # wait N closed bars after any exit before re-entering (0=off)
 
 # AI multi-agent configuration
 # API keys are read from environment variables:
@@ -144,6 +148,14 @@ rotation:
 backtest:
   initial-balance: 1000
   fee-pct: 0.1
+
+# USDT-M perpetual futures (futures-trade command) — MAINNET, real funds
+# API keys: BINANCE_FUTURES_API_KEY / BINANCE_FUTURES_SECRET_KEY env vars
+# (falls back to BINANCE_API_KEY / BINANCE_SECRET_KEY when unset).
+futures:
+  leverage: 2          # initial leverage per symbol (1-125, keep it low)
+  margin-type: "isolated"  # isolated (losses capped per position) or crossed
+  # max-funding-pct: 0.0     # >0 → skip entries whose side would pay more than this funding %/interval (long pays when positive, short when negative)
 
 api:
   address: "127.0.0.1:8080"

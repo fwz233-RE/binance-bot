@@ -57,7 +57,7 @@ func DynamicTrade(
 	refreshInterval := time.Duration(refreshSecs) * time.Second
 
 	// initialize binance api client
-	client := binance_connector.NewClient(exchange.APIKey, exchange.SecretKey, exchange.BaseURL)
+	client := exchange.NewClient()
 
 	// validate strategy flag
 	strategy = strings.ToLower(strategy)
@@ -102,7 +102,7 @@ func DynamicTrade(
 	dash.SetConfig(cfg)
 
 	// initialize file logger
-	fl, err := tui.NewFileLogger("binance-bot.log")
+	fl, err := tui.NewFileLogger(sessionLogFile(symbol))
 	if err != nil {
 		log.Printf("Warning: could not open log file: %v", err)
 	} else {
@@ -190,7 +190,8 @@ func dynamicTradeLoop(
 	takeProfit = feeAdjustedTakeProfit(symbol, cfg, takeProfit, dash)
 
 operationLoop:
-	for operation <= int(max_ops) {
+	// max_ops == 0 means run until manually stopped (24/7 mode)
+	for max_ops == 0 || operation <= int(max_ops) {
 		dash.SetOperation(operation)
 		qty = indicator.RoundFloat(qty, roundAmount)
 

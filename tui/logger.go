@@ -43,6 +43,16 @@ func (fl *FileLogger) Log(level, msg string) {
 	fl.logger.Printf("%s [%s] %s", ts, level, clean)
 }
 
+// Write implements io.Writer so the global `log` package output can be
+// redirected into the session log file while the TUI owns the terminal.
+// Any write to stdout/stderr during a tview session bypasses tcell's screen
+// buffer and corrupts the display (overlapping stale text).
+func (fl *FileLogger) Write(p []byte) (int, error) {
+	fl.mu.Lock()
+	defer fl.mu.Unlock()
+	return fl.file.Write(p)
+}
+
 // Close flushes and closes the underlying file.
 func (fl *FileLogger) Close() error {
 	fl.mu.Lock()

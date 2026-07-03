@@ -5,10 +5,14 @@
 
 ## Features
 
+- **USDT-M Futures** — `futures-trade` opens leveraged long/short positions on Binance perpetual futures with isolated/crossed margin, configurable leverage, and reduce-only exits with relentless retry. v0.21.0 adds mark-price exit pricing, an HTF trend gate for entry direction, tendency evaluation on `tendency.interval`, and a funding-rate entry filter. v0.23.0 makes the session crash-safe: startup reconciliation adopts positions the exchange already holds, the operation counter survives restarts, and shutdown closes and journals any open position
+- **24/7 Infinite Mode** — Set `--operations 0` to run continuously until manually stopped; the default remains 100 operations per session
+- **Multi-Instance** — Run one process per ticker from the same directory: per-ticker log and journal files, aggregated history API, and rate-limit backoff (429/418/-1003 with Retry-After) on the shared IP weight pool
+- **Server-Time Sync** — Continuously compensates local clock drift against Binance server time (min-RTT sampling), preventing `-1021` timestamp rejections on signed requests
 - **Auto Trade** — Automatically detects market tendency and switches between bull/bear strategies per operation; supports forced strategy mode and waits when the account cannot fund the detected side
 - **Bull Trade** — Buy-low-sell-high strategy for uptrending markets
 - **Bear Trade** — Sell-high-buy-low strategy for downtrending markets
-- **Scalp Mode** — High-frequency micro-trading using a scoring-based entry system. v0.14.0 adds pullback-in-trend RSI, anticipatory MACD with optional consecutive-bar confirmation, Bollinger price-touch + squeeze, RSI-divergence bonus, ATR regime filter, recent-extreme guard, ATR-based TP/SL, time-stop, break-even pin, and MACD-peak exit. v0.14.2 adds the MACD `min-separation` gate so entries only fire after a meaningful prior MACD/signal gap is now closing in
+- **Scalp Mode** — High-frequency micro-trading using a scoring-based entry system. v0.14.0 adds pullback-in-trend RSI, anticipatory MACD with optional consecutive-bar confirmation, Bollinger price-touch + squeeze, RSI-divergence bonus, ATR regime filter, recent-extreme guard, ATR-based TP/SL, time-stop, break-even pin, and MACD-peak exit. v0.14.2 adds the MACD `min-separation` gate so entries only fire after a meaningful prior MACD/signal gap is now closing in. v0.20.0 reworks the exit state machine: bars count closed klines, unconditional `max-hold-bars` exit, post-break-even ATR trailing floor, and re-entry cooldown
 - **Advanced Indicators** — RSI (+ optional SMA smoothing), MACD, DEMA, Bollinger Bands (+ width-ratio for squeeze), ADX, ATR, Stochastic RSI, swing-extrema divergence, and volume confirmation
 - **Top Gainers Monitor** — Real-time TUI dashboard of the top 24h movers on Binance
 - **Rotation Scout Mode** — Scans a configured asset basket and rotates through a bridge asset when relative ratios become fee-adjusted opportunities
@@ -68,6 +72,14 @@ Before using the Binance Trade Bot, you need to configure your environment with 
    ```bash
    export BINANCE_API_KEY=<your-api-key>
    export BINANCE_SECRET_KEY=<your-secret-key>
+   ```
+
+   For the `futures-trade` command you can provide dedicated futures keys;
+   they fall back to the spot keys when unset:
+
+   ```bash
+   export BINANCE_FUTURES_API_KEY=<your-futures-api-key>
+   export BINANCE_FUTURES_SECRET_KEY=<your-futures-secret-key>
    ```
 
 3. **Set AI Provider API Keys (optional)**
@@ -214,9 +226,96 @@ These arguments apply to the `auto-trade`, `bull-trade`, and `bear-trade` comman
 | `--sell-factor`      | `-s`  | Factor to determine the target price for a LIMIT sell order.                                | `1.0001`      |
 | `--round-price`      | `-rp` | Decimal precision for rounding price values.                                                | **Required**  |
 | `--round-amount`     | `-ra` | Decimal precision for rounding amount values.                                               | **Required**  |
-| `--operations`       | `-o`  | Number of operations to execute during the trading session.                                 | `100`         |
+| `--operations`       | `-o`  | Number of operations to execute (`0` = infinite, run until manually stopped).              | `100`         |
 | `--strategy`         | `-st` | *(auto-trade only)* Force entry strategy: `bull`, `bear`, or `auto`.                       | `auto`        |
 | `--help`             | `-h`  | Show help for the command.                                                                  | -             |
+
+#### Futures Trading (`futures-trade`, `ft`)
+
+Trades USDT-M perpetual futures: opens leveraged LONG or SHORT positions and
+closes them with reduce-only market orders (take-profit, stop-loss, trailing
+stop, time-stop). Exit orders are retried indefinitely — a leveraged position
+is never left unmanaged. Entries are skipped (with a single log line) while
+the futures wallet cannot fund the required margin. Exits are fee-aware: the
+live taker rate is fetched per session (falling back to
+`fees.default-taker-pct` when the lookup fails), take-profit targets are
+floored at round-trip fees + buffer, and every net-zero exit gate
+(break-even floor, time-stop, MACD-peak) also clears fees **plus**
+`fees.buffer-pct` — the buffer absorbs the poll gap and market-order
+slippage that previously turned break-even closes into guaranteed
+micro-losses. Entries are refused while ATR% is below the round-trip fee
+(a bar range that cannot pay the fee has no positive expectancy), and the
+dashboard shows both gross and net P&L. When `ai.enabled` is
+set, the same AI multi-agent consensus used by the spot strategies gates
+futures entries (long = BUY approval, short = SELL approval) and confirms
+take-profit exits. The MACD-peak early exit locks gains on histogram
+rollover once fees are covered. Leverage and margin type come from the
+`futures` config section. **Orders go to the live exchange and trade real
+funds.**
+
+The session is crash-safe on both ends. On startup the bot **reconciles**
+with the exchange: a position already held for the symbol (e.g. after a
+crash or kill) is adopted — direction, quantity and entry price come from
+the exchange, identity metadata (op ID, entry time) from the journal's
+unpaired entry record — and its exit is managed before any new entry is
+scanned. The journal's `operation` counter continues across restarts. On
+shutdown (dashboard `q`/`Ctrl-C`, `SIGINT`, `SIGTERM`) any open position is
+closed with reduce-only orders and journaled with reason
+`futures-shutdown` — a leveraged position never outlives its exit
+management. Every journal record now carries `version` and `config_hash`
+so live results can be grouped by the exact build and parameter set that
+produced them.
+
+```bash
+binance-bot -f binance-config.yml futures-trade -t BTC/USDT -a 0.002 -sl 1.0 -tp 1.5 -rp 2 -ra 3 -o 0 -d auto
+```
+
+| Option           | Short | Description                                                        | Default      |
+|------------------|-------|--------------------------------------------------------------------|--------------|
+| `--ticker`       | `-t`  | The trading pair ticker in the format `ABC/USD` (e.g., `BTC/USDT`). | **Required** |
+| `--amount`       | `-a`  | Contract quantity in base asset.                                   | **Required** |
+| `--stop-loss`    | `-sl` | Stop-loss percentage on position P&L.                              | `1.0`        |
+| `--take-profit`  | `-tp` | Take-profit percentage on position P&L.                            | `1.5`        |
+| `--round-price`  | `-rp` | Decimal precision for rounding price values.                       | **Required** |
+| `--round-amount` | `-ra` | Decimal precision for rounding amount values.                      | **Required** |
+| `--operations`   | `-o`  | Number of operations (`0` = infinite, run until manually stopped). | `100`        |
+| `--direction`    | `-d`  | Position direction: `long`, `short`, or `auto` (follow tendency).  | `auto`       |
+
+> **Risk note**: P&L percentages are on price movement; with leverage `L` the
+> margin impact is `L×` that. A 1% stop-loss at 10x leverage costs 10% of the
+> position margin. Keep leverage low and start with minimal quantities.
+
+Every entry and every exit (take-profit, stop-loss, trailing stop, time-stop,
+MACD-peak) is journaled to `data-dir/trades-<TICKER>.jsonl` (one file per
+symbol). Exit records are
+self-sufficient for P&L analysis: they carry the close `order_id` and the
+**actual fill price** (slippage stays visible; decision price is the
+fallback), `direction` (long/short),
+`entry_price`, gross `pnl_pct`, fee-adjusted `pnl_net_pct`, `fee_pct`,
+holding time `hold_secs`, and an `op_id` that pairs each exit with its entry.
+
+#### Running Multiple Instances (one per ticker)
+
+Each trading command drives exactly one symbol, so running several coins means
+running several processes from the same directory — no extra setup:
+
+```bash
+binance-bot -f binance-config.yml futures-trade -t DOGE/USDT -a 134 -rp 5 -ra 0 -o 0 &
+binance-bot -f binance-config.yml futures-trade -t ETH/USDT -a 0.01 -rp 2 -ra 3 -o 0 &
+```
+
+Isolation guarantees:
+
+- Logs go to `binance-bot-<TICKER>.log` and trade journals to
+  `data-dir/trades-<TICKER>.jsonl`, one file per instance.
+- The `serve` command aggregates all `trades*.jsonl` files into `/api/trades`;
+  run only one `serve` process per port.
+- All instances behind one IP share Binance's request-weight pool. The futures
+  client backs off exponentially on HTTP 429/418 and code -1003, honoring
+  `Retry-After`, but keep `refresh-interval` at 10s or higher when running
+  many instances.
+- Instances share the account balance: size `--amount` so the combined margin
+  requirements fit the wallet, or entries will be skipped.
 
 ### Help Commands
 
@@ -234,7 +333,7 @@ These arguments apply to the `auto-trade`, `bull-trade`, and `bear-trade` comman
      binance-bot [global options] command <command args>
 
   VERSION:
-     v0.14.2
+     v0.23.0
 
   AUTHOR:
      Walter Ferreira <wferreirauy@gmail.com>
@@ -244,6 +343,7 @@ These arguments apply to the `auto-trade`, `bull-trade`, and `bear-trade` comman
      bear-trade, brt   Start a bear trade run (sell high, buy back low)
      auto-trade, at    Automatically detect market tendency and trade accordingly (bull or bear)
      top-gainers, tg   Monitor top market gainers in real-time
+     futures-trade, ft  Trade USDT-M perpetual futures (long/short with leverage, config: futures section)
      rotate-trade, rt  Scout a basket of assets and rotate through the configured bridge asset
      backtest, btst    Backtest a registered strategy on recent Binance candles
      serve, srv        Serve persisted trade, scout, and value history over HTTP
@@ -326,7 +426,7 @@ refresh-interval: 10
 | Field | Type | Sample | Description |
 |-------|------|--------|-------------|
 | `base-url` | string | `https://api1.binance.com` | Binance API base URL. Leave empty to use the built-in production endpoint; use `https://testnet.binance.vision` for testnet. |
-| `data-dir` | string | `.binance-bot` | Directory used for persisted trade history, scout history, value records, and rotation state. |
+| `data-dir` | string | `.binance-bot` | Directory used for persisted trade history (`trades-<TICKER>.jsonl` per symbol), scout history, value records, and rotation state. |
 | `historical-prices.period` | int | `100` | Number of candles fetched for indicators and backtests. |
 | `historical-prices.interval` | string | `1m` | Candle interval used for the main OHLCV fetch. |
 | `refresh-interval` | int | `10` | Seconds between live price polls and indicator recalculation. |
@@ -481,6 +581,10 @@ scalp-mode:
   max-atr-pct: 0.0                   # regime filter — skip entries when ATR% above this
   macd-peak-exit: false              # exit in profit when MACD histogram rolls over
   recent-extreme-bars: 0             # skip BULL near recent high / BEAR near recent low
+  # --- v0.20 exit-state-machine rework (bar = closed kline, all opt-in) ---
+  max-hold-bars: 0                   # close position after N closed bars regardless of P&L (0=off)
+  breakeven-trail-atr-mult: 0.0      # after break-even, trail exit floor at peak − mult × ATR%
+  reentry-cooldown-bars: 0           # wait N closed bars after any exit before re-entering (0=off)
 ```
 
 | Field | Type | Sample | Description |
@@ -490,7 +594,7 @@ scalp-mode:
 | `scalp-mode.post-buy-delay` | int | `30` | Seconds to wait after fill before exit monitoring. |
 | `scalp-mode.inter-op-delay` | int | `60` | Seconds to wait between completed operations. |
 | `scalp-mode.require-rsi-exit` | bool | `true` | Requires RSI momentum confirmation for take-profit exits when true. |
-| `scalp-mode.sl-cooldown` | bool | `false` | Enables exponential backoff after consecutive stop-losses. |
+| `scalp-mode.sl-cooldown` | bool | `false` | Enables exponential backoff after consecutive losing exits (counted on realized net P&L, regardless of exit mechanism). |
 | `scalp-mode.max-consecutive-sl` | int | `2` | Consecutive stop-loss count before cooldown starts. |
 | `scalp-mode.cooldown-base-secs` | int | `60` | Base cooldown seconds; doubles after additional consecutive stop-losses. |
 | `scalp-mode.atr-stop-loss` | bool | `false` | Uses ATR as a dynamic stop-loss floor. |
@@ -506,12 +610,15 @@ scalp-mode:
 | `scalp-mode.fast-trend-gate` | bool | `false` | Accepts trend signal if either tendency aligns OR MACD line is on the bullish/bearish side of zero. |
 | `scalp-mode.tp-atr-multiplier` | float | `0.0` | If >0, take-profit becomes `max(takeProfit%, mult × ATR%)`. |
 | `scalp-mode.sl-atr-multiplier` | float | `0.0` | If >0, stop-loss becomes `max(stopLoss%, mult × ATR%)`. Overrides `atr-multiplier` when set. |
-| `scalp-mode.time-stop-bars` | int | `0` | Exits flat (P&L≥0 but TP not reached) positions after N bars. |
-| `scalp-mode.breakeven-atr-mult` | float | `0.0` | Once peak P&L ≥ mult × ATR%, pins the stop-loss to the entry price. |
-| `scalp-mode.min-atr-pct` | float | `0.0` | Regime filter — refuse entries when ATR% is below this threshold (dead market). |
+| `scalp-mode.time-stop-bars` | int | `0` | Exits flat (P&L≥0 but TP not reached) positions after N closed bars of the trading interval (previously counted refresh ticks). |
+| `scalp-mode.breakeven-atr-mult` | float | `0.0` | Once peak P&L ≥ `max(mult × ATR%, fees + buffer)` **and** current P&L is above the fee floor, pins the exit floor at fees + buffer. The buffered arm gate prevents guaranteed micro-loss exits in low-ATR regimes. |
+| `scalp-mode.min-atr-pct` | float | `0.0` | Regime filter — refuse entries when ATR% is below this threshold (dead market). On futures the effective minimum is never below the round-trip fee. |
 | `scalp-mode.max-atr-pct` | float | `0.0` | Regime filter — refuse entries when ATR% is above this threshold (chaotic market). |
 | `scalp-mode.macd-peak-exit` | bool | `false` | Exits in profit when MACD histogram rolls over for 3 consecutive bars. |
 | `scalp-mode.recent-extreme-bars` | int | `0` | Blocks BULL entries near a recent high (BEAR near recent low) over the given lookback. |
+| `scalp-mode.max-hold-bars` | int | `0` | Unconditional time exit: closes the position after N closed bars regardless of P&L, so losing positions cannot bleed for hours. |
+| `scalp-mode.breakeven-trail-atr-mult` | float | `0.0` | After break-even activates, trails the exit floor at `peak P&L − mult × ATR%` (never below fees + buffer) instead of pinning it, letting winners run toward TP. |
+| `scalp-mode.reentry-cooldown-bars` | int | `0` | Waits N closed bars after any exit before scanning for re-entry, preventing immediate same-price re-entries that only pay fees. |
 
 ### AI
 
@@ -592,6 +699,27 @@ rotation:
 
 Rotation mode persists its current asset in `data-dir/current_asset.json` and records scout comparisons in `data-dir/scouts.jsonl`.
 
+### Futures
+
+```yaml
+futures:
+  leverage: 2              # initial leverage per symbol (1-125, keep it low)
+  margin-type: "isolated"  # isolated (losses capped per position) or crossed
+  max-funding-pct: 0.0     # >0 → skip entries whose side would pay more than this funding %/interval
+```
+
+| Field | Type | Sample | Description |
+|-------|------|--------|-------------|
+| `futures.leverage` | int | `2` | Initial leverage applied per symbol at session start. |
+| `futures.margin-type` | string | `isolated` | `isolated` caps losses per position; `crossed` shares the wallet margin. |
+| `futures.max-funding-pct` | float | `0.0` | Funding gate — skips entries whose side would pay more than this funding % per interval (longs pay when the rate is positive, shorts when negative). |
+
+The futures strategy prices exit decisions on the **mark price** (the
+liquidation engine's reference) when available, and applies the same
+higher-timeframe trend gate as the spot strategies when `tendency.htf-enabled`
+is set: LONG entries require the HTF trend to be up, SHORT entries down. The
+trading tendency itself is evaluated on `tendency.interval` candles.
+
 ### Backtest And API
 
 ```yaml
@@ -613,7 +741,18 @@ Backtests use recent Binance candles and append simulated trade records. The API
 
 ### File Logging
 
-All log levels (orders, info, errors) are automatically written to `binance-bot.log` in the working directory, alongside the TUI display. Color tags are stripped before writing. The file is opened in append mode so logs accumulate across sessions.
+All log levels (orders, info, errors) are automatically written to a
+per-session log file in the working directory, alongside the TUI display:
+`binance-bot-<TICKER>.log` for trading sessions (e.g.
+`binance-bot-DOGEUSDT.log`) and `binance-bot-topgainers.log` for the gainers
+monitor. Color tags are stripped before writing. Files are opened in append
+mode so logs accumulate across sessions, and concurrent instances never
+interleave lines in one file.
+
+While the TUI owns the terminal, the global Go `log` output (transient AI and
+exchange errors, quantity adjustments) is redirected into the same session log
+file — nothing writes to stdout/stderr behind tcell's back, which previously
+corrupted the display with overlapping stale text.
 
 ```
 2026-04-07 12:30:00 [INFO]  Scalp entry: score 5/6 (min 5)

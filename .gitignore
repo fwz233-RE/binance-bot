@@ -2,3 +2,6 @@
 .vscode/
 *.log
 PR-description-draft.md
+binance-bot.exe
+binance-config.yml
+.binance-bot/

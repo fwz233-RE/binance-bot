@@ -53,7 +53,7 @@ func IsInsufficientBalance(err error) bool {
 
 // GetSymbolFilters fetches MIN_NOTIONAL and LOT_SIZE filters from Binance exchange info.
 func GetSymbolFilters(symbol string) (*SymbolFilters, error) {
-	client := binance.NewClient(APIKey, SecretKey, BaseURL)
+	client := NewClient()
 	info, err := client.NewExchangeInfoService().Do(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("exchange info: %w", err)
@@ -200,7 +200,7 @@ func AdjustQuantityDown(qty, price float64, filters *SymbolFilters, roundPrecisi
 // Orders fee = 0.01% (* 0.0001)
 
 func GetAllOrders(symbol string) {
-	client := binance.NewClient(APIKey, SecretKey, BaseURL)
+	client := NewClient()
 	// Binance Get all account orders; active, canceled, or filled - GET /api/v3/allOrders
 	getAllOrders, err := client.NewGetAllOrdersService().Symbol(symbol).
 		Do(context.Background())
@@ -212,7 +212,7 @@ func GetAllOrders(symbol string) {
 }
 
 func GetOrder(symbol string, id int64) (res *binance.GetOrderResponse, err error) {
-	client := binance.NewClient(APIKey, SecretKey, BaseURL)
+	client := NewClient()
 	order, err := client.NewGetOrderService().Symbol(symbol).OrderId(id).Do(context.Background())
 	if err != nil {
 		return &binance.GetOrderResponse{}, err
@@ -222,7 +222,7 @@ func GetOrder(symbol string, id int64) (res *binance.GetOrderResponse, err error
 
 func NewOrder(symbol, side string, quantity, price float64) (interface{}, error) {
 
-	client := binance.NewClient(APIKey, SecretKey, BaseURL)
+	client := NewClient()
 	if err := EnsureSufficientBalance(symbol, side, quantity, price); err != nil {
 		return nil, err
 	}
@@ -242,7 +242,7 @@ func NewMarketOrder(symbol, side string, quantity float64) (interface{}, error) 
 
 func NewMarketOrderWithPrice(symbol, side string, quantity, estimatedPrice float64) (interface{}, error) {
 
-	client := binance.NewClient(APIKey, SecretKey, BaseURL)
+	client := NewClient()
 	price := estimatedPrice
 	if side == "BUY" && price <= 0 {
 		currentPrice, err := GetPrice(client, symbol)
@@ -265,7 +265,7 @@ func NewMarketOrderWithPrice(symbol, side string, quantity, estimatedPrice float
 }
 
 func CancelOrder(symbol string, orderID int64) error {
-	client := binance.NewClient(APIKey, SecretKey, BaseURL)
+	client := NewClient()
 	_, err := client.NewCancelOrderService().Symbol(symbol).OrderId(orderID).Do(context.Background())
 	if err != nil {
 		return fmt.Errorf("order: canceling order %d: %w", orderID, err)
@@ -274,7 +274,7 @@ func CancelOrder(symbol string, orderID int64) error {
 }
 
 func GetBalance(asset string) (float64, error) {
-	client := binance.NewClient(APIKey, SecretKey, BaseURL)
+	client := NewClient()
 	account, err := client.NewGetAccountService().Do(context.Background())
 	if err != nil {
 		return 0, fmt.Errorf("account: %w", err)
@@ -293,7 +293,7 @@ func GetBalance(asset string) (float64, error) {
 }
 
 func GetTradeFeePct(symbol string, defaultPct float64) float64 {
-	client := binance.NewClient(APIKey, SecretKey, BaseURL)
+	client := NewClient()
 	fees, err := client.NewTradeFeeService().Symbol(symbol).Do(context.Background())
 	if err != nil || len(fees) == 0 {
 		return defaultPct

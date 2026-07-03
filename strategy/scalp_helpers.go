@@ -26,6 +26,11 @@ type scalpEvalInput struct {
 	AvgVolume     float64
 	ATRVal        float64
 	Price         float64
+	// MinATRFloorPct raises the regime filter's minimum ATR% when set.
+	// Futures passes the live round-trip fee here: entering while the
+	// per-bar range is below the cost of the trade is structurally
+	// unprofitable regardless of signal quality. Zero for spot callers.
+	MinATRFloorPct float64
 }
 
 type scalpEvalResult struct {
@@ -87,9 +92,13 @@ func evaluateScalp(in scalpEvalInput) scalpEvalResult {
 	// ---- Regime filter (ATR%) ----
 	if in.ATRVal > 0 && in.Price > 0 {
 		atrPct := in.ATRVal / in.Price * 100
-		if cfg.ScalpMode.MinATRPct > 0 && atrPct < cfg.ScalpMode.MinATRPct {
+		minATR := cfg.ScalpMode.MinATRPct
+		if in.MinATRFloorPct > minATR {
+			minATR = in.MinATRFloorPct
+		}
+		if minATR > 0 && atrPct < minATR {
 			res.RegimeBlocked = true
-			res.RegimeReason = fmt.Sprintf("ATR %.3f%% < min %.3f%% (regime too quiet)", atrPct, cfg.ScalpMode.MinATRPct)
+			res.RegimeReason = fmt.Sprintf("ATR %.3f%% < min %.3f%% (regime too quiet to clear costs)", atrPct, minATR)
 		}
 		if cfg.ScalpMode.MaxATRPct > 0 && atrPct > cfg.ScalpMode.MaxATRPct {
 			res.RegimeBlocked = true

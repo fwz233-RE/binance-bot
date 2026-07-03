@@ -105,6 +105,10 @@ scalp-mode:
   max-atr-pct: 3.0              # skip entries above 3.0% ATR (chaotic spike)
   macd-peak-exit: true          # exit profitable trade when MACD histogram rolls over
   recent-extreme-bars: 30       # block BULL entries within 0.1×ATR of last 30-bar high (BEAR mirror)
+  # --- v0.20 exit-state-machine rework (bar = closed kline of historical-prices.interval) ---
+  max-hold-bars: 60             # hard time exit: close after 60 closed bars (1h on 1m) regardless of P&L
+  breakeven-trail-atr-mult: 1.0 # after break-even, trail exit floor at peak − 1.0 × ATR% (lets winners run to TP)
+  reentry-cooldown-bars: 3      # wait 3 closed bars after any exit before re-entering
 
 # AI — disabled by default for scalp mode to avoid adding LLM latency to fast entry/exit paths.
 # Enable only if slower decisions are acceptable and you want explicit AI approval before entries.

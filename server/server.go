@@ -27,7 +27,7 @@ func Serve(configFile string) error {
 	})
 	mux.HandleFunc("/api/trades", func(w http.ResponseWriter, r *http.Request) {
 		limit := limitParam(r)
-		records, err := storage.ReadJSONL[storage.TradeRecord](cfg.DataDir, storage.TradesFile, limit)
+		records, err := storage.ReadTrades(cfg.DataDir, limit)
 		writeResponse(w, records, err)
 	})
 	mux.HandleFunc("/api/scouts", func(w http.ResponseWriter, r *http.Request) {

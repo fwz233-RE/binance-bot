@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	binance_connector "github.com/binance/binance-connector-go"
 	"github.com/wferreirauy/binance-bot/config"
 	"github.com/wferreirauy/binance-bot/exchange"
 	"github.com/wferreirauy/binance-bot/storage"
@@ -55,7 +54,7 @@ func runRotation(cfg *config.Config) error {
 	if err := store.SetCurrentAsset(currentAsset); err != nil {
 		return err
 	}
-	client := binance_connector.NewClient(exchange.APIKey, exchange.SecretKey, exchange.BaseURL)
+	client := exchange.NewClient()
 	baselines := map[string]rotationPair{}
 	jumps := 0
 	sleep := time.Duration(cfg.Rotation.ScoutSleepSeconds) * time.Second
