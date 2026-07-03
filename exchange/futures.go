@@ -413,6 +413,7 @@ type FuturesPosition struct {
 	EntryPrice       float64
 	LiquidationPrice float64
 	UnrealizedProfit float64
+	MarginType       string // "isolated" or "cross" as reported by Binance
 }
 
 // FuturesGetPosition reads /fapi/v2/positionRisk for a symbol.
@@ -428,6 +429,7 @@ func (c *FuturesClient) FuturesGetPosition(symbol string) (*FuturesPosition, err
 		EntryPrice       string `json:"entryPrice"`
 		LiquidationPrice string `json:"liquidationPrice"`
 		UnRealizedProfit string `json:"unRealizedProfit"`
+		MarginType       string `json:"marginType"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, fmt.Errorf("futures: decode position: %w", err)
@@ -436,10 +438,28 @@ func (c *FuturesClient) FuturesGetPosition(symbol string) (*FuturesPosition, err
 		return &FuturesPosition{}, nil
 	}
 	p := raw[0]
-	pos := &FuturesPosition{}
+	pos := &FuturesPosition{MarginType: strings.ToLower(p.MarginType)}
 	pos.PositionAmt, _ = strconv.ParseFloat(p.PositionAmt, 64)
 	pos.EntryPrice, _ = strconv.ParseFloat(p.EntryPrice, 64)
 	pos.LiquidationPrice, _ = strconv.ParseFloat(p.LiquidationPrice, 64)
 	pos.UnrealizedProfit, _ = strconv.ParseFloat(p.UnRealizedProfit, 64)
 	return pos, nil
+}
+
+// FuturesOpenOrdersCount returns how many open orders exist for a symbol.
+// The bot itself only uses market orders, so any open order is foreign
+// (e.g. manually placed in the app) and worth surfacing: it can fill into an
+// unmanaged position and it blocks margin-type changes (-4067/-4048).
+func (c *FuturesClient) FuturesOpenOrdersCount(symbol string) (int, error) {
+	params := url.Values{}
+	params.Set("symbol", symbol)
+	body, err := c.request(http.MethodGet, "/fapi/v1/openOrders", params, true)
+	if err != nil {
+		return 0, err
+	}
+	var raw []json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return 0, fmt.Errorf("futures: decode open orders: %w", err)
+	}
+	return len(raw), nil
 }

@@ -105,7 +105,10 @@ func FuturesTrade(
 	}
 }
 
-// futuresSetup applies leverage and margin type once per session.
+// futuresSetup applies leverage and margin type once per session, then
+// verifies what the exchange actually reports: a failed margin-type change
+// (e.g. -4067 open orders) silently leaves the previous mode active, which
+// on a leveraged account can mean CROSSED instead of the configured ISOLATED.
 func futuresSetup(dash *tui.Dashboard, fc *exchange.FuturesClient, cfg *config.Config, ticker string) {
 	leverage := cfg.Futures.Leverage
 	if leverage <= 0 {
@@ -118,6 +121,24 @@ func futuresSetup(dash *tui.Dashboard, fc *exchange.FuturesClient, cfg *config.C
 	if err := fc.SetMarginType(ticker, marginType); err != nil && !exchange.IsFuturesCode(err, -4046) {
 		// -4046 = "No need to change margin type" — already what we asked for
 		dash.LogError(fmt.Sprintf("Set margin type: %v", err))
+		// Verify against the live position state instead of trusting config.
+		want := strings.ToLower(marginType)
+		if want == "crossed" {
+			want = "cross" // positionRisk reports "cross"
+		}
+		if pos, perr := fc.FuturesGetPosition(ticker); perr == nil && pos.MarginType != "" {
+			if pos.MarginType == want {
+				dash.LogInfo(fmt.Sprintf("[green]Margin type verified[-] %s already %s — change was unnecessary", ticker, strings.ToUpper(pos.MarginType)))
+			} else {
+				dash.LogError(fmt.Sprintf("MARGIN TYPE MISMATCH: %s is %s, config wants %s — resolve before trading (cancel open orders / close positions, then restart)",
+					ticker, strings.ToUpper(pos.MarginType), strings.ToUpper(marginType)))
+			}
+		}
+	}
+	// The bot never leaves resting orders; any open order is foreign, can
+	// fill into an unmanaged position, and blocks margin-type changes.
+	if n, oerr := fc.FuturesOpenOrdersCount(ticker); oerr == nil && n > 0 {
+		dash.LogError(fmt.Sprintf("%d foreign open order(s) on %s — not placed by this bot; cancel them in the app to avoid unmanaged fills", n, ticker))
 	}
 	if err := fc.SetLeverage(ticker, leverage); err != nil {
 		dash.LogError(fmt.Sprintf("Set leverage: %v", err))
