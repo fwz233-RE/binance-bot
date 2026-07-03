@@ -126,21 +126,34 @@ func futuresSetup(dash *tui.Dashboard, fc *exchange.FuturesClient, cfg *config.C
 	}
 }
 
+// closeFill carries what actually happened when a position was closed: the
+// close order id and the average fill price (0 when unknown, e.g. the
+// position was already flat or the response omitted the fill).
+type closeFill struct {
+	OrderID int64
+	Price   float64
+}
+
 // closePositionRelentlessly market-closes a position with reduceOnly and never
 // gives up: a leveraged position without exit management risks liquidation, so
-// on error it backs off and retries until Binance accepts the order.
-func closePositionRelentlessly(dash *tui.Dashboard, fc *exchange.FuturesClient, ticker, closeSide string, qty float64, label string) {
+// on error it backs off and retries until Binance accepts the order. Returns
+// the actual close fill so the journal can record realized (not decision) P&L.
+func closePositionRelentlessly(dash *tui.Dashboard, fc *exchange.FuturesClient, ticker, closeSide string, qty float64, label string) closeFill {
 	backoff := 2 * time.Second
 	for {
 		order, err := fc.FuturesMarketOrder(ticker, closeSide, qty, true)
 		if err == nil {
 			dash.LogOrder(fmt.Sprintf("%s close order #%d status %s", label, order.OrderId, order.Status))
-			return
+			fill := closeFill{OrderID: order.OrderId}
+			if p, perr := parseFloatNonZero(order.AvgPrice); perr == nil {
+				fill.Price = p
+			}
+			return fill
 		}
 		// Position already gone (e.g. reduce-only rejected because qty is 0)?
 		if pos, perr := fc.FuturesGetPosition(ticker); perr == nil && pos.PositionAmt == 0 {
 			dash.LogInfo(fmt.Sprintf("[yellow]%s close: position already flat[-]", label))
-			return
+			return closeFill{}
 		}
 		dash.LogError(fmt.Sprintf("%s close failed (retrying in %s): %v", label, backoff, err))
 		time.Sleep(backoff)
@@ -179,16 +192,24 @@ func (op futuresOp) pnlPct(price float64) float64 {
 }
 
 // recordFuturesExit journals a position close, pairing it with its entry via
-// OpID and embedding realized P&L, fees and holding time. Every exit path
-// must go through here so the journal alone reconstructs the session.
-func recordFuturesExit(cfg *config.Config, ticker, closeSide string, op futuresOp, exitPrice, feeRoundTrip float64, reason string) {
+// OpID and embedding realized P&L, fees and holding time. P&L uses the actual
+// fill price when available (slippage stays visible in the data) and falls
+// back to the decision price. Every exit path must go through here so the
+// journal alone reconstructs the session. Returns the realized net P&L %.
+func recordFuturesExit(cfg *config.Config, ticker, closeSide string, op futuresOp, fill closeFill, decisionPrice, feeRoundTrip float64, reason string) float64 {
+	exitPrice := fill.Price
+	if exitPrice == 0 {
+		exitPrice = decisionPrice
+	}
 	pnl := op.pnlPct(exitPrice)
 	recordTrade(cfg, storage.TradeRecord{
-		Symbol: ticker, Side: closeSide, Quantity: op.Qty, Price: exitPrice, Reason: reason,
+		Symbol: ticker, Side: closeSide, OrderID: fill.OrderID,
+		Quantity: op.Qty, Price: exitPrice, Reason: reason,
 		Direction: op.direction(), EntryPrice: op.EntryPrice,
 		PnLPct: pnl, PnLNetPct: pnl - feeRoundTrip, FeePct: feeRoundTrip,
 		HoldSecs: time.Since(op.EntryTime).Seconds(), OpID: op.ID,
 	})
+	return pnl - feeRoundTrip
 }
 
 func futuresTradeLoop(
@@ -205,7 +226,7 @@ func futuresTradeLoop(
 	period := cfg.HistoricalPrices.Period
 	interval := cfg.HistoricalPrices.Interval
 	var operation = 1
-	var consecutiveSL int
+	var consecutiveLosses int
 
 	// Round-trip taker fees as % of notional (~% of price move). Every exit
 	// decision must clear this floor or a "profitable" close is a net loss.
@@ -287,7 +308,7 @@ func futuresTradeLoop(
 					paying := (candidateLong && idx.FundingRatePct > maxFunding) ||
 						(!candidateLong && -idx.FundingRatePct > maxFunding)
 					if paying {
-						lastWait = logWaitOnce(dash, lastWait, fmt.Sprintf("funding-gate:%.4f", idx.FundingRatePct),
+						lastWait = logWaitOnce(dash, lastWait, "funding-gate",
 							fmt.Sprintf("[yellow]FUNDING GATE[-] rate %+.4f%%/interval exceeds %.4f%% — skipping entry", idx.FundingRatePct, maxFunding))
 						time.Sleep(refreshInterval)
 						continue
@@ -456,28 +477,31 @@ func futuresTradeLoop(
 
 		//// EXIT: monitor TP / SL / trailing; close with reduceOnly ////
 		dash.SetPhase("MONITORING EXIT")
-		exitType := futuresExitLoop(dash, fc, cfg, aiOrch, ticker, scoin, dcoin, op, stopLoss, takeProfit, roundPrice, roundAmount, refreshInterval, feeRoundTrip)
+		_, netPnL := futuresExitLoop(dash, fc, cfg, aiOrch, ticker, scoin, dcoin, op, stopLoss, takeProfit, roundPrice, roundAmount, refreshInterval, feeRoundTrip)
 
-		if exitType == "sl" {
-			consecutiveSL++
+		// Loss cooldown keys off the realized outcome, not the exit
+		// mechanism: a profitable break-even "stop" is not a loss, and a
+		// losing max-hold exit is one.
+		if netPnL < 0 {
+			consecutiveLosses++
 			maxConsec := cfg.ScalpMode.MaxConsecutiveSL
 			if maxConsec <= 0 {
 				maxConsec = 2
 			}
-			if cfg.ScalpMode.SLCooldown && consecutiveSL >= maxConsec {
+			if cfg.ScalpMode.SLCooldown && consecutiveLosses >= maxConsec {
 				baseSecs := cfg.ScalpMode.CooldownBaseSecs
 				if baseSecs <= 0 {
 					baseSecs = 60
 				}
-				cooldown := baseSecs * (1 << (consecutiveSL - maxConsec))
+				cooldown := baseSecs * (1 << (consecutiveLosses - maxConsec))
 				if cooldown > 600 {
 					cooldown = 600
 				}
-				dash.LogInfo(fmt.Sprintf("[red]SL COOLDOWN[-] %d consecutive SLs — waiting %ds", consecutiveSL, cooldown))
+				dash.LogInfo(fmt.Sprintf("[red]LOSS COOLDOWN[-] %d consecutive losing exits — waiting %ds", consecutiveLosses, cooldown))
 				time.Sleep(time.Duration(cooldown) * time.Second)
 			}
 		} else {
-			consecutiveSL = 0
+			consecutiveLosses = 0
 		}
 
 		operation++
@@ -501,9 +525,9 @@ func futuresTradeLoop(
 }
 
 // futuresExitLoop watches an open position until an exit fires. Returns the
-// exit type ("tp", "sl", "ts"). Closing uses reduceOnly and infinite retry.
-// feeRoundTrip (% of notional) gates every in-profit exit so displayed wins
-// survive the fee deduction.
+// exit type ("tp", "sl", "ts") and the realized net P&L % of the close.
+// Closing uses reduceOnly and infinite retry. feeRoundTrip (% of notional)
+// gates every in-profit exit so displayed wins survive the fee deduction.
 func futuresExitLoop(
 	dash *tui.Dashboard,
 	fc *exchange.FuturesClient,
@@ -515,7 +539,7 @@ func futuresExitLoop(
 	roundPrice, roundAmount uint,
 	refreshInterval time.Duration,
 	feeRoundTrip float64,
-) string {
+) (string, float64) {
 	period := cfg.HistoricalPrices.Period
 	interval := cfg.HistoricalPrices.Interval
 	isLong := op.IsLong
@@ -606,9 +630,8 @@ func futuresExitLoop(
 					dash.SetPhase("TRAILING STOP")
 					dash.LogInfo(fmt.Sprintf("[fuchsia]Trailing-stop:[-] price %.*f vs trail %.*f (best %.*f, P&L %+.2f%%)",
 						roundPrice, exitPrice, roundPrice, trail, roundPrice, bestPrice, pnl))
-					closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[fuchsia::b]TRAILING-STOP[-]")
-					recordFuturesExit(cfg, ticker, closeSide, op, exitPrice, feeRoundTrip, "futures-trailing")
-					return "ts"
+					fill := closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[fuchsia::b]TRAILING-STOP[-]")
+					return "ts", recordFuturesExit(cfg, ticker, closeSide, op, fill, exitPrice, feeRoundTrip, "futures-trailing")
 				}
 			}
 		}
@@ -652,9 +675,8 @@ func futuresExitLoop(
 			dash.SetPhase("STOP LOSS")
 			dash.LogInfo(fmt.Sprintf("[red]Stop-loss:[-] P&L %+.2f%% <= -%.2f%% (entry %.*f, price %.*f)",
 				pnl, effectiveSL, roundPrice, entryPrice, roundPrice, exitPrice))
-			closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[red::b]STOP-LOSS[-]")
-			recordFuturesExit(cfg, ticker, closeSide, op, exitPrice, feeRoundTrip, "futures-sl")
-			return "sl"
+			fill := closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[red::b]STOP-LOSS[-]")
+			return "sl", recordFuturesExit(cfg, ticker, closeSide, op, fill, exitPrice, feeRoundTrip, "futures-sl")
 		}
 
 		// Max-hold: unconditional time exit. Losing positions previously had
@@ -663,9 +685,8 @@ func futuresExitLoop(
 		if cfg.ScalpMode.MaxHoldBars > 0 && barsSinceEntry >= cfg.ScalpMode.MaxHoldBars {
 			dash.SetPhase("MAX HOLD")
 			dash.LogInfo(fmt.Sprintf("[yellow]Max-hold:[-] %d closed bars, P&L %+.2f%% gross / %+.2f%% net — closing unconditionally", barsSinceEntry, pnl, pnl-feeRoundTrip))
-			closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[yellow::b]MAX-HOLD[-]")
-			recordFuturesExit(cfg, ticker, closeSide, op, exitPrice, feeRoundTrip, "futures-maxhold")
-			return "ts"
+			fill := closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[yellow::b]MAX-HOLD[-]")
+			return "ts", recordFuturesExit(cfg, ticker, closeSide, op, fill, exitPrice, feeRoundTrip, "futures-maxhold")
 		}
 
 		// Time-stop for flat positions: only exits once gross P&L at least
@@ -673,9 +694,8 @@ func futuresExitLoop(
 		if cfg.ScalpMode.TimeStopBars > 0 && barsSinceEntry >= cfg.ScalpMode.TimeStopBars && pnl >= feeRoundTrip && pnl < effectiveTP {
 			dash.SetPhase("TIME STOP")
 			dash.LogInfo(fmt.Sprintf("[yellow]Time-stop:[-] %d closed bars, P&L %+.2f%% gross / %+.2f%% net (TP not reached)", barsSinceEntry, pnl, pnl-feeRoundTrip))
-			closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[yellow::b]TIME-STOP[-]")
-			recordFuturesExit(cfg, ticker, closeSide, op, exitPrice, feeRoundTrip, "futures-timestop")
-			return "ts"
+			fill := closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[yellow::b]TIME-STOP[-]")
+			return "ts", recordFuturesExit(cfg, ticker, closeSide, op, fill, exitPrice, feeRoundTrip, "futures-timestop")
 		}
 
 		// MACD-peak exit: lock gains when histogram rolls over, but only once
@@ -684,9 +704,8 @@ func futuresExitLoop(
 		if pnl >= feeRoundTrip && shouldMACDPeakExit(cfg, macdLine, signalLine, isLong, pnl) {
 			dash.SetPhase("MACD PEAK EXIT")
 			dash.LogInfo(fmt.Sprintf("[fuchsia]MACD-peak exit:[-] histogram rolling over, P&L %+.2f%% gross / %+.2f%% net", pnl, pnl-feeRoundTrip))
-			closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[fuchsia::b]MACD-PEAK[-]")
-			recordFuturesExit(cfg, ticker, closeSide, op, exitPrice, feeRoundTrip, "futures-macdpeak")
-			return "tp"
+			fill := closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[fuchsia::b]MACD-PEAK[-]")
+			return "tp", recordFuturesExit(cfg, ticker, closeSide, op, fill, exitPrice, feeRoundTrip, "futures-macdpeak")
 		}
 
 		// Take-profit (effectiveTP already clears the fee floor).
@@ -728,9 +747,8 @@ func futuresExitLoop(
 			dash.SetPhase("TAKE PROFIT")
 			dash.LogInfo(fmt.Sprintf("[green]Take-profit:[-] P&L %+.2f%% gross / %+.2f%% net >= %.2f%% (entry %.*f, price %.*f)",
 				pnl, pnl-feeRoundTrip, effectiveTP, roundPrice, entryPrice, roundPrice, exitPrice))
-			closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[green::b]TAKE-PROFIT[-]")
-			recordFuturesExit(cfg, ticker, closeSide, op, exitPrice, feeRoundTrip, "futures-tp")
-			return "tp"
+			fill := closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[green::b]TAKE-PROFIT[-]")
+			return "tp", recordFuturesExit(cfg, ticker, closeSide, op, fill, exitPrice, feeRoundTrip, "futures-tp")
 		}
 
 		time.Sleep(refreshInterval)

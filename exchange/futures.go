@@ -97,8 +97,10 @@ func errorsAs(err error, target **FuturesAPIError) bool {
 
 // request performs one REST call with rate-limit protection: HTTP 429/418 and
 // code -1003 responses are retried with exponential backoff honoring
-// Retry-After. Several instances sharing one IP weight pool then degrade
-// gracefully instead of hammering Binance into an IP ban.
+// Retry-After. Only idempotent GETs are auto-retried — order placement fails
+// fast so the strategy layer re-evaluates instead of filling a stale signal
+// tens of seconds later. Several instances sharing one IP weight pool then
+// degrade gracefully instead of hammering Binance into an IP ban.
 func (c *FuturesClient) request(method, path string, params url.Values, signed bool) ([]byte, error) {
 	backoff := 2 * time.Second
 	for attempt := 0; ; attempt++ {
@@ -107,7 +109,7 @@ func (c *FuturesClient) request(method, path string, params url.Values, signed b
 			return body, nil
 		}
 		retryAfter, limited := rateLimitDelay(err)
-		if !limited || attempt >= 4 {
+		if !limited || method != http.MethodGet || attempt >= 4 {
 			return nil, err
 		}
 		wait := backoff

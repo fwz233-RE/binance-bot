@@ -269,7 +269,9 @@ binance-bot -f binance-config.yml futures-trade -t BTC/USDT -a 0.002 -sl 1.0 -tp
 Every entry and every exit (take-profit, stop-loss, trailing stop, time-stop,
 MACD-peak) is journaled to `data-dir/trades-<TICKER>.jsonl` (one file per
 symbol). Exit records are
-self-sufficient for P&L analysis: they carry `direction` (long/short),
+self-sufficient for P&L analysis: they carry the close `order_id` and the
+**actual fill price** (slippage stays visible; decision price is the
+fallback), `direction` (long/short),
 `entry_price`, gross `pnl_pct`, fee-adjusted `pnl_net_pct`, `fee_pct`,
 holding time `hold_secs`, and an `op_id` that pairs each exit with its entry.
 
@@ -312,7 +314,7 @@ Isolation guarantees:
      binance-bot [global options] command <command args>
 
   VERSION:
-     v0.22.0
+     v0.22.1
 
   AUTHOR:
      Walter Ferreira <wferreirauy@gmail.com>
@@ -573,7 +575,7 @@ scalp-mode:
 | `scalp-mode.post-buy-delay` | int | `30` | Seconds to wait after fill before exit monitoring. |
 | `scalp-mode.inter-op-delay` | int | `60` | Seconds to wait between completed operations. |
 | `scalp-mode.require-rsi-exit` | bool | `true` | Requires RSI momentum confirmation for take-profit exits when true. |
-| `scalp-mode.sl-cooldown` | bool | `false` | Enables exponential backoff after consecutive stop-losses. |
+| `scalp-mode.sl-cooldown` | bool | `false` | Enables exponential backoff after consecutive losing exits (counted on realized net P&L, regardless of exit mechanism). |
 | `scalp-mode.max-consecutive-sl` | int | `2` | Consecutive stop-loss count before cooldown starts. |
 | `scalp-mode.cooldown-base-secs` | int | `60` | Base cooldown seconds; doubles after additional consecutive stop-losses. |
 | `scalp-mode.atr-stop-loss` | bool | `false` | Uses ATR as a dynamic stop-loss floor. |
