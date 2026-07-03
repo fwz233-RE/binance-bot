@@ -149,6 +149,47 @@ func closePositionRelentlessly(dash *tui.Dashboard, fc *exchange.FuturesClient, 
 	}
 }
 
+// futuresOp carries the identity of one open position from entry to exit so
+// every exit record in the journal is self-sufficient for P&L reconstruction.
+type futuresOp struct {
+	ID         string
+	EntryPrice float64
+	EntryTime  time.Time
+	IsLong     bool
+	Qty        float64
+}
+
+func (op futuresOp) direction() string {
+	if op.IsLong {
+		return "long"
+	}
+	return "short"
+}
+
+// pnlPct is direction-normalized: positive = in profit for our side.
+func (op futuresOp) pnlPct(price float64) float64 {
+	if op.EntryPrice == 0 {
+		return 0
+	}
+	if op.IsLong {
+		return (price - op.EntryPrice) / op.EntryPrice * 100
+	}
+	return (op.EntryPrice - price) / op.EntryPrice * 100
+}
+
+// recordFuturesExit journals a position close, pairing it with its entry via
+// OpID and embedding realized P&L, fees and holding time. Every exit path
+// must go through here so the journal alone reconstructs the session.
+func recordFuturesExit(cfg *config.Config, ticker, closeSide string, op futuresOp, exitPrice, feeRoundTrip float64, reason string) {
+	pnl := op.pnlPct(exitPrice)
+	recordTrade(cfg, storage.TradeRecord{
+		Symbol: ticker, Side: closeSide, Quantity: op.Qty, Price: exitPrice, Reason: reason,
+		Direction: op.direction(), EntryPrice: op.EntryPrice,
+		PnLPct: pnl, PnLNetPct: pnl - feeRoundTrip, FeePct: feeRoundTrip,
+		HoldSecs: time.Since(op.EntryTime).Seconds(), OpID: op.ID,
+	})
+}
+
 func futuresTradeLoop(
 	dash *tui.Dashboard,
 	fc *exchange.FuturesClient,
@@ -176,8 +217,7 @@ func futuresTradeLoop(
 
 		//// ENTRY: wait for a tradable direction, then score the entry ////
 		dash.SetPhase("SCANNING ENTRY")
-		var isLong bool
-		var entryPrice float64
+		var op futuresOp
 		var lastWait string
 
 		for {
@@ -352,14 +392,20 @@ func futuresTradeLoop(
 				continue // entry failure is recoverable: stay in the scan loop
 			}
 			// MARKET+RESULT responses carry the fill; fall back to position read.
-			entryPrice = parsePriceOrPosition(fc, ticker, order.AvgPrice, price)
-			isLong = candidateLong
+			op = futuresOp{
+				ID:         fmt.Sprintf("%s-%d-%d", ticker, operation, time.Now().Unix()),
+				EntryPrice: parsePriceOrPosition(fc, ticker, order.AvgPrice, price),
+				EntryTime:  time.Now(),
+				IsLong:     candidateLong,
+				Qty:        qty,
+			}
 			dash.SetTradeMode("FUTURES " + label)
 			dash.LogOrder(fmt.Sprintf("[green::b]OPEN %s[-] %f %s @ [white::b]%.*f[-] %s (order #%d)",
-				label, qty, scoin, roundPrice, entryPrice, dcoin, order.OrderId))
+				label, qty, scoin, roundPrice, op.EntryPrice, dcoin, order.OrderId))
 			recordTrade(cfg, storage.TradeRecord{
 				Symbol: ticker, Side: side, OrderID: order.OrderId, Status: order.Status,
-				Quantity: qty, Price: entryPrice, Reason: "futures-entry",
+				Quantity: qty, Price: op.EntryPrice, Reason: "futures-entry",
+				Direction: op.direction(), Operation: operation, OpID: op.ID,
 			})
 			break
 		}
@@ -372,7 +418,7 @@ func futuresTradeLoop(
 
 		//// EXIT: monitor TP / SL / trailing; close with reduceOnly ////
 		dash.SetPhase("MONITORING EXIT")
-		exitType := futuresExitLoop(dash, fc, cfg, aiOrch, ticker, scoin, dcoin, qty, entryPrice, stopLoss, takeProfit, roundPrice, roundAmount, refreshInterval, isLong, feeRoundTrip)
+		exitType := futuresExitLoop(dash, fc, cfg, aiOrch, ticker, scoin, dcoin, op, stopLoss, takeProfit, roundPrice, roundAmount, refreshInterval, feeRoundTrip)
 
 		if exitType == "sl" {
 			consecutiveSL++
@@ -416,25 +462,22 @@ func futuresExitLoop(
 	cfg *config.Config,
 	aiOrch *ai.Orchestrator,
 	ticker, scoin, dcoin string,
-	qty, entryPrice, stopLoss, takeProfit float64,
+	op futuresOp,
+	stopLoss, takeProfit float64,
 	roundPrice, roundAmount uint,
 	refreshInterval time.Duration,
-	isLong bool,
 	feeRoundTrip float64,
 ) string {
 	period := cfg.HistoricalPrices.Period
 	interval := cfg.HistoricalPrices.Interval
+	isLong := op.IsLong
+	qty := op.Qty
+	entryPrice := op.EntryPrice
 	closeSide := "SELL"
 	if !isLong {
 		closeSide = "BUY"
 	}
-	// pnlPct is direction-normalized: positive = in profit for our side.
-	pnlPct := func(price float64) float64 {
-		if isLong {
-			return (price - entryPrice) / entryPrice * 100
-		}
-		return (entryPrice - price) / entryPrice * 100
-	}
+	pnlPct := op.pnlPct
 
 	bestPrice := entryPrice
 	barsSinceEntry := 0
@@ -500,6 +543,7 @@ func futuresExitLoop(
 					dash.LogInfo(fmt.Sprintf("[fuchsia]Trailing-stop:[-] price %.*f vs trail %.*f (best %.*f, P&L %+.2f%%)",
 						roundPrice, price, roundPrice, trail, roundPrice, bestPrice, pnl))
 					closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[fuchsia::b]TRAILING-STOP[-]")
+					recordFuturesExit(cfg, ticker, closeSide, op, price, feeRoundTrip, "futures-trailing")
 					return "ts"
 				}
 			}
@@ -532,7 +576,7 @@ func futuresExitLoop(
 			dash.LogInfo(fmt.Sprintf("[red]Stop-loss:[-] P&L %+.2f%% <= -%.2f%% (entry %.*f, price %.*f)",
 				pnl, effectiveSL, roundPrice, entryPrice, roundPrice, price))
 			closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[red::b]STOP-LOSS[-]")
-			recordTrade(cfg, storage.TradeRecord{Symbol: ticker, Side: closeSide, Quantity: qty, Price: price, Reason: "futures-sl"})
+			recordFuturesExit(cfg, ticker, closeSide, op, price, feeRoundTrip, "futures-sl")
 			return "sl"
 		}
 
@@ -542,7 +586,7 @@ func futuresExitLoop(
 			dash.SetPhase("TIME STOP")
 			dash.LogInfo(fmt.Sprintf("[yellow]Time-stop:[-] %d bars, P&L %+.2f%% gross / %+.2f%% net (TP not reached)", barsSinceEntry, pnl, pnl-feeRoundTrip))
 			closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[yellow::b]TIME-STOP[-]")
-			recordTrade(cfg, storage.TradeRecord{Symbol: ticker, Side: closeSide, Quantity: qty, Price: price, Reason: "futures-timestop"})
+			recordFuturesExit(cfg, ticker, closeSide, op, price, feeRoundTrip, "futures-timestop")
 			return "ts"
 		}
 
@@ -553,7 +597,7 @@ func futuresExitLoop(
 			dash.SetPhase("MACD PEAK EXIT")
 			dash.LogInfo(fmt.Sprintf("[fuchsia]MACD-peak exit:[-] histogram rolling over, P&L %+.2f%% gross / %+.2f%% net", pnl, pnl-feeRoundTrip))
 			closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[fuchsia::b]MACD-PEAK[-]")
-			recordTrade(cfg, storage.TradeRecord{Symbol: ticker, Side: closeSide, Quantity: qty, Price: price, Reason: "futures-macdpeak"})
+			recordFuturesExit(cfg, ticker, closeSide, op, price, feeRoundTrip, "futures-macdpeak")
 			return "tp"
 		}
 
@@ -597,7 +641,7 @@ func futuresExitLoop(
 			dash.LogInfo(fmt.Sprintf("[green]Take-profit:[-] P&L %+.2f%% gross / %+.2f%% net >= %.2f%% (entry %.*f, price %.*f)",
 				pnl, pnl-feeRoundTrip, effectiveTP, roundPrice, entryPrice, roundPrice, price))
 			closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[green::b]TAKE-PROFIT[-]")
-			recordTrade(cfg, storage.TradeRecord{Symbol: ticker, Side: closeSide, Quantity: qty, Price: price, Reason: "futures-tp"})
+			recordFuturesExit(cfg, ticker, closeSide, op, price, feeRoundTrip, "futures-tp")
 			return "tp"
 		}
 

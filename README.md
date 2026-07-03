@@ -265,6 +265,12 @@ binance-bot -f binance-config.yml futures-trade -t BTC/USDT -a 0.002 -sl 1.0 -tp
 > margin impact is `L×` that. A 1% stop-loss at 10x leverage costs 10% of the
 > position margin. Keep leverage low and start with minimal quantities.
 
+Every entry and every exit (take-profit, stop-loss, trailing stop, time-stop,
+MACD-peak) is journaled to `data-dir/trades.jsonl`. Exit records are
+self-sufficient for P&L analysis: they carry `direction` (long/short),
+`entry_price`, gross `pnl_pct`, fee-adjusted `pnl_net_pct`, `fee_pct`,
+holding time `hold_secs`, and an `op_id` that pairs each exit with its entry.
+
 ### Help Commands
 
 - For general help on the bot:
@@ -281,7 +287,7 @@ binance-bot -f binance-config.yml futures-trade -t BTC/USDT -a 0.002 -sl 1.0 -tp
      binance-bot [global options] command <command args>
 
   VERSION:
-     v0.18.0
+     v0.19.0
 
   AUTHOR:
      Walter Ferreira <wferreirauy@gmail.com>

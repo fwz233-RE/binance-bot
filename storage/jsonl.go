@@ -35,6 +35,16 @@ type TradeRecord struct {
 	Operation      int       `json:"operation,omitempty"`
 	ExecutedQty    float64   `json:"executed_qty,omitempty"`
 	PartialHandled bool      `json:"partial_handled,omitempty"`
+	// Self-contained P&L audit fields: exit records link back to their entry
+	// via OpID and carry direction, fees and holding time, so the journal
+	// alone is enough to reconstruct a session without replaying logs.
+	Direction  string  `json:"direction,omitempty"`
+	EntryPrice float64 `json:"entry_price,omitempty"`
+	PnLPct     float64 `json:"pnl_pct,omitempty"`
+	PnLNetPct  float64 `json:"pnl_net_pct,omitempty"`
+	FeePct     float64 `json:"fee_pct,omitempty"`
+	HoldSecs   float64 `json:"hold_secs,omitempty"`
+	OpID       string  `json:"op_id,omitempty"`
 }
 
 type ScoutRecord struct {

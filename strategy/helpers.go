@@ -333,6 +333,11 @@ func waitOrderFilled(dash *tui.Dashboard, ticker string, orderId int64, filledMs
 		}
 		if result.Order != nil {
 			price, _ := strconv.ParseFloat(result.Order.Price, 64)
+			if price == 0 && result.ExecutedQty > 0 && result.CumulativeQuoteQty > 0 {
+				// Market orders report price 0; derive the average fill price
+				// so the journal stays self-sufficient for P&L math.
+				price = result.CumulativeQuoteQty / result.ExecutedQty
+			}
 			recordTrade(cfg, storage.TradeRecord{
 				Symbol:         ticker,
 				Side:           result.Order.Side,
