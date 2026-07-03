@@ -300,6 +300,38 @@ func (c *FuturesClient) FuturesTakerFeePct(symbol string) (float64, error) {
 	return rate * 100, nil
 }
 
+// FuturesPremiumIndex holds the mark price and funding snapshot for a symbol
+// from /fapi/v1/premiumIndex. FundingRatePct is the last funding rate as a
+// percentage per funding interval (e.g. 0.01 for 0.01%): positive = longs pay
+// shorts, negative = shorts pay longs.
+type FuturesPremiumIndex struct {
+	MarkPrice      float64
+	FundingRatePct float64
+}
+
+// FuturesGetPremiumIndex fetches the mark price (the liquidation engine's
+// price reference) and the latest funding rate for a symbol.
+func (c *FuturesClient) FuturesGetPremiumIndex(symbol string) (*FuturesPremiumIndex, error) {
+	params := url.Values{}
+	params.Set("symbol", symbol)
+	body, err := c.request(http.MethodGet, "/fapi/v1/premiumIndex", params, false)
+	if err != nil {
+		return nil, err
+	}
+	var raw struct {
+		MarkPrice       string `json:"markPrice"`
+		LastFundingRate string `json:"lastFundingRate"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("futures: decode premium index: %w", err)
+	}
+	idx := &FuturesPremiumIndex{}
+	idx.MarkPrice, _ = strconv.ParseFloat(raw.MarkPrice, 64)
+	rate, _ := strconv.ParseFloat(raw.LastFundingRate, 64)
+	idx.FundingRatePct = rate * 100
+	return idx, nil
+}
+
 // FuturesPosition is the live position snapshot for one symbol (one-way mode).
 type FuturesPosition struct {
 	PositionAmt      float64 // signed: >0 long, <0 short, 0 flat

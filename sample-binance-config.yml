@@ -155,6 +155,7 @@ backtest:
 futures:
   leverage: 2          # initial leverage per symbol (1-125, keep it low)
   margin-type: "isolated"  # isolated (losses capped per position) or crossed
+  # max-funding-pct: 0.0     # >0 → skip entries whose side would pay more than this funding %/interval (long pays when positive, short when negative)
 
 api:
   address: "127.0.0.1:8080"

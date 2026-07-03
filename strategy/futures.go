@@ -234,8 +234,10 @@ func futuresTradeLoop(
 			prevPrice := ohlcv.Closes[len(ohlcv.Closes)-2]
 			dash.UpdatePrice(price, prevPrice, roundPrice)
 
-			// Tendency from futures candles (same DEMA-vs-EMA rule as spot).
-			tendency := futuresTendency(cfg, ohlcv.Closes)
+			// Tendency from the configured tendency interval (falls back to
+			// the in-hand trading-interval candles when the fetch fails).
+			// The 1m close series was too noisy to steer auto direction.
+			tendency := futuresTendencyAt(fc, cfg, ticker, ohlcv.Closes)
 			candidateLong := tendency == "up"
 
 			// Forced direction gate
@@ -256,6 +258,41 @@ func futuresTradeLoop(
 					"[yellow]Tendency is flat[-] — waiting for a confirmed direction")
 				time.Sleep(refreshInterval)
 				continue
+			}
+
+			// Higher-timeframe trend gate, mirroring the spot strategies:
+			// block LONG when the HTF trend is not up, SHORT when not down.
+			if cfg.Tendency.HTFEnabled && cfg.Tendency.HTFInterval != "" {
+				htp := cfg.HTFTendencyParams()
+				htf, htfErr := futuresTendencyFor(fc, cfg, ticker, htp)
+				if htfErr != nil {
+					dash.LogError(fmt.Sprintf("HTF Tendency: %v", htfErr))
+				} else if (candidateLong && htf != "up") || (!candidateLong && htf != "down") {
+					label := "LONG"
+					if !candidateLong {
+						label = "SHORT"
+					}
+					lastWait = logWaitOnce(dash, lastWait, "htf-gate:"+htf,
+						fmt.Sprintf("[red]HTF GATE[-] %s trend is [red]%s[-] on %s — skipping %s entry",
+							ticker, htf, htp.Interval, label))
+					time.Sleep(refreshInterval)
+					continue
+				}
+			}
+
+			// Funding filter: skip entries whose side would pay an outsized
+			// funding rate (longs pay when positive, shorts when negative).
+			if maxFunding := cfg.Futures.MaxFundingPct; maxFunding > 0 {
+				if idx, fErr := fc.FuturesGetPremiumIndex(ticker); fErr == nil {
+					paying := (candidateLong && idx.FundingRatePct > maxFunding) ||
+						(!candidateLong && -idx.FundingRatePct > maxFunding)
+					if paying {
+						lastWait = logWaitOnce(dash, lastWait, fmt.Sprintf("funding-gate:%.4f", idx.FundingRatePct),
+							fmt.Sprintf("[yellow]FUNDING GATE[-] rate %+.4f%%/interval exceeds %.4f%% — skipping entry", idx.FundingRatePct, maxFunding))
+						time.Sleep(refreshInterval)
+						continue
+					}
+				}
 			}
 
 			// Indicators + scalp scoring (shared with spot strategies).
@@ -513,7 +550,14 @@ func futuresExitLoop(
 		prevPrice := ohlcv.Closes[len(ohlcv.Closes)-2]
 		dash.UpdatePrice(price, prevPrice, roundPrice)
 
-		pnl := pnlPct(price)
+		// Exit decisions price on the mark price when available — it is what
+		// the liquidation engine uses — while indicators keep the kline series.
+		exitPrice := price
+		if idx, mErr := fc.FuturesGetPremiumIndex(ticker); mErr == nil && idx.MarkPrice > 0 {
+			exitPrice = idx.MarkPrice
+		}
+
+		pnl := pnlPct(exitPrice)
 		if pnl > peakPnL {
 			peakPnL = pnl
 		}
@@ -541,8 +585,8 @@ func futuresExitLoop(
 		}
 
 		// Track the best price seen in our favor (high for long, low for short).
-		if (isLong && price > bestPrice) || (!isLong && price < bestPrice) {
-			bestPrice = price
+		if (isLong && exitPrice > bestPrice) || (!isLong && exitPrice < bestPrice) {
+			bestPrice = exitPrice
 		}
 
 		// Trailing stop, direction-normalized.
@@ -553,17 +597,17 @@ func futuresExitLoop(
 				var hit bool
 				if isLong {
 					trail = bestPrice * (1 - cfg.TrailingStop.TrailingPct/100)
-					hit = price <= trail
+					hit = exitPrice <= trail
 				} else {
 					trail = bestPrice * (1 + cfg.TrailingStop.TrailingPct/100)
-					hit = price >= trail
+					hit = exitPrice >= trail
 				}
 				if hit {
 					dash.SetPhase("TRAILING STOP")
 					dash.LogInfo(fmt.Sprintf("[fuchsia]Trailing-stop:[-] price %.*f vs trail %.*f (best %.*f, P&L %+.2f%%)",
-						roundPrice, price, roundPrice, trail, roundPrice, bestPrice, pnl))
+						roundPrice, exitPrice, roundPrice, trail, roundPrice, bestPrice, pnl))
 					closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[fuchsia::b]TRAILING-STOP[-]")
-					recordFuturesExit(cfg, ticker, closeSide, op, price, feeRoundTrip, "futures-trailing")
+					recordFuturesExit(cfg, ticker, closeSide, op, exitPrice, feeRoundTrip, "futures-trailing")
 					return "ts"
 				}
 			}
@@ -607,9 +651,9 @@ func futuresExitLoop(
 		if pnl <= -effectiveSL {
 			dash.SetPhase("STOP LOSS")
 			dash.LogInfo(fmt.Sprintf("[red]Stop-loss:[-] P&L %+.2f%% <= -%.2f%% (entry %.*f, price %.*f)",
-				pnl, effectiveSL, roundPrice, entryPrice, roundPrice, price))
+				pnl, effectiveSL, roundPrice, entryPrice, roundPrice, exitPrice))
 			closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[red::b]STOP-LOSS[-]")
-			recordFuturesExit(cfg, ticker, closeSide, op, price, feeRoundTrip, "futures-sl")
+			recordFuturesExit(cfg, ticker, closeSide, op, exitPrice, feeRoundTrip, "futures-sl")
 			return "sl"
 		}
 
@@ -620,7 +664,7 @@ func futuresExitLoop(
 			dash.SetPhase("MAX HOLD")
 			dash.LogInfo(fmt.Sprintf("[yellow]Max-hold:[-] %d closed bars, P&L %+.2f%% gross / %+.2f%% net — closing unconditionally", barsSinceEntry, pnl, pnl-feeRoundTrip))
 			closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[yellow::b]MAX-HOLD[-]")
-			recordFuturesExit(cfg, ticker, closeSide, op, price, feeRoundTrip, "futures-maxhold")
+			recordFuturesExit(cfg, ticker, closeSide, op, exitPrice, feeRoundTrip, "futures-maxhold")
 			return "ts"
 		}
 
@@ -630,7 +674,7 @@ func futuresExitLoop(
 			dash.SetPhase("TIME STOP")
 			dash.LogInfo(fmt.Sprintf("[yellow]Time-stop:[-] %d closed bars, P&L %+.2f%% gross / %+.2f%% net (TP not reached)", barsSinceEntry, pnl, pnl-feeRoundTrip))
 			closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[yellow::b]TIME-STOP[-]")
-			recordFuturesExit(cfg, ticker, closeSide, op, price, feeRoundTrip, "futures-timestop")
+			recordFuturesExit(cfg, ticker, closeSide, op, exitPrice, feeRoundTrip, "futures-timestop")
 			return "ts"
 		}
 
@@ -641,7 +685,7 @@ func futuresExitLoop(
 			dash.SetPhase("MACD PEAK EXIT")
 			dash.LogInfo(fmt.Sprintf("[fuchsia]MACD-peak exit:[-] histogram rolling over, P&L %+.2f%% gross / %+.2f%% net", pnl, pnl-feeRoundTrip))
 			closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[fuchsia::b]MACD-PEAK[-]")
-			recordFuturesExit(cfg, ticker, closeSide, op, price, feeRoundTrip, "futures-macdpeak")
+			recordFuturesExit(cfg, ticker, closeSide, op, exitPrice, feeRoundTrip, "futures-macdpeak")
 			return "tp"
 		}
 
@@ -683,9 +727,9 @@ func futuresExitLoop(
 			}
 			dash.SetPhase("TAKE PROFIT")
 			dash.LogInfo(fmt.Sprintf("[green]Take-profit:[-] P&L %+.2f%% gross / %+.2f%% net >= %.2f%% (entry %.*f, price %.*f)",
-				pnl, pnl-feeRoundTrip, effectiveTP, roundPrice, entryPrice, roundPrice, price))
+				pnl, pnl-feeRoundTrip, effectiveTP, roundPrice, entryPrice, roundPrice, exitPrice))
 			closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[green::b]TAKE-PROFIT[-]")
-			recordFuturesExit(cfg, ticker, closeSide, op, price, feeRoundTrip, "futures-tp")
+			recordFuturesExit(cfg, ticker, closeSide, op, exitPrice, feeRoundTrip, "futures-tp")
 			return "tp"
 		}
 
@@ -738,18 +782,52 @@ func intervalDuration(interval string) time.Duration {
 	return 0
 }
 
+// futuresTendencyAt resolves the trading tendency on the configured
+// tendency.interval, falling back to the in-hand closes (trading interval)
+// when no dedicated interval is set or the fetch fails.
+func futuresTendencyAt(fc *exchange.FuturesClient, cfg *config.Config, ticker string, fallbackCloses []float64) string {
+	tp := cfg.TradingTendencyParams()
+	if tp.Interval != "" && tp.Interval != cfg.HistoricalPrices.Interval {
+		if t, err := futuresTendencyFor(fc, cfg, ticker, tp); err == nil {
+			return t
+		}
+	}
+	return futuresTendency(cfg, fallbackCloses)
+}
+
+// futuresTendencyFor fetches klines for the given tendency parameter set and
+// applies the DEMA-vs-EMA rule. Used for both the trading tendency and the
+// higher-timeframe gate.
+func futuresTendencyFor(fc *exchange.FuturesClient, cfg *config.Config, ticker string, tp config.TendencyParams) (string, error) {
+	frames := tp.Frames
+	if frames <= 0 {
+		frames = cfg.HistoricalPrices.Period
+	}
+	ohlcv, err := fc.FuturesKlines(ticker, tp.Interval, frames)
+	if err != nil {
+		return "", err
+	}
+	if len(ohlcv.Closes) == 0 {
+		return "", fmt.Errorf("futures: no klines for %s@%s", ticker, tp.Interval)
+	}
+	return tendencyFromCloses(ohlcv.Closes, tp.FastLength, tp.SlowLength, tp.ConfirmBars), nil
+}
+
 // futuresTendency reuses the DEMA-vs-EMA tendency rule on candles already in hand.
 func futuresTendency(cfg *config.Config, closes []float64) string {
 	tp := cfg.TradingTendencyParams()
-	fastLen := tp.FastLength
+	return tendencyFromCloses(closes, tp.FastLength, tp.SlowLength, tp.ConfirmBars)
+}
+
+// tendencyFromCloses is the pure DEMA-vs-EMA tendency rule: "up" when DEMA
+// stays above EMA for the confirmation window, "down" when below, else "flat".
+func tendencyFromCloses(closes []float64, fastLen, slowLen, confirm int) string {
 	if fastLen <= 0 {
 		fastLen = 9
 	}
-	slowLen := tp.SlowLength
 	if slowLen <= 0 {
 		slowLen = len(closes)
 	}
-	confirm := tp.ConfirmBars
 	if confirm <= 0 {
 		confirm = 1
 	}

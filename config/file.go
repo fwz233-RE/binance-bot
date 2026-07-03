@@ -155,8 +155,9 @@ type Config struct {
 		FeePct         float64 `yaml:"fee-pct"`
 	} `yaml:"backtest"`
 	Futures struct {
-		Leverage   int    `yaml:"leverage"`    // initial leverage set per symbol (default 2)
-		MarginType string `yaml:"margin-type"` // "isolated" (default) or "crossed"
+		Leverage      int     `yaml:"leverage"`        // initial leverage set per symbol (default 2)
+		MarginType    string  `yaml:"margin-type"`     // "isolated" (default) or "crossed"
+		MaxFundingPct float64 `yaml:"max-funding-pct"` // when > 0, skip entries whose side would pay more than this funding % per interval
 	} `yaml:"futures"`
 	API struct {
 		Address string `yaml:"address"`

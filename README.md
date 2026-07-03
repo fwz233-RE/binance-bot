@@ -5,7 +5,7 @@
 
 ## Features
 
-- **USDT-M Futures** — `futures-trade` opens leveraged long/short positions on Binance perpetual futures with isolated/crossed margin, configurable leverage, and reduce-only exits with relentless retry
+- **USDT-M Futures** — `futures-trade` opens leveraged long/short positions on Binance perpetual futures with isolated/crossed margin, configurable leverage, and reduce-only exits with relentless retry. v0.21.0 adds mark-price exit pricing, an HTF trend gate for entry direction, tendency evaluation on `tendency.interval`, and a funding-rate entry filter
 - **24/7 Infinite Mode** — Set `--operations 0` to run continuously until manually stopped; the default remains 100 operations per session
 - **Server-Time Sync** — Continuously compensates local clock drift against Binance server time (min-RTT sampling), preventing `-1021` timestamp rejections on signed requests
 - **Auto Trade** — Automatically detects market tendency and switches between bull/bear strategies per operation; supports forced strategy mode and waits when the account cannot fund the detected side
@@ -287,7 +287,7 @@ holding time `hold_secs`, and an `op_id` that pairs each exit with its entry.
      binance-bot [global options] command <command args>
 
   VERSION:
-     v0.20.0
+     v0.21.0
 
   AUTHOR:
      Walter Ferreira <wferreirauy@gmail.com>
@@ -652,6 +652,27 @@ rotation:
 | `rotation.min-notional-buffer` | float | `1.01` | Multiplier applied when satisfying Binance minimum notional filters. |
 
 Rotation mode persists its current asset in `data-dir/current_asset.json` and records scout comparisons in `data-dir/scouts.jsonl`.
+
+### Futures
+
+```yaml
+futures:
+  leverage: 2              # initial leverage per symbol (1-125, keep it low)
+  margin-type: "isolated"  # isolated (losses capped per position) or crossed
+  max-funding-pct: 0.0     # >0 → skip entries whose side would pay more than this funding %/interval
+```
+
+| Field | Type | Sample | Description |
+|-------|------|--------|-------------|
+| `futures.leverage` | int | `2` | Initial leverage applied per symbol at session start. |
+| `futures.margin-type` | string | `isolated` | `isolated` caps losses per position; `crossed` shares the wallet margin. |
+| `futures.max-funding-pct` | float | `0.0` | Funding gate — skips entries whose side would pay more than this funding % per interval (longs pay when the rate is positive, shorts when negative). |
+
+The futures strategy prices exit decisions on the **mark price** (the
+liquidation engine's reference) when available, and applies the same
+higher-timeframe trend gate as the spot strategies when `tendency.htf-enabled`
+is set: LONG entries require the HTF trend to be up, SHORT entries down. The
+trading tendency itself is evaluated on `tendency.interval` candles.
 
 ### Backtest And API
 
