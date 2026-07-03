@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -443,6 +444,16 @@ func futuresTradeLoop(
 		}
 
 		operation++
+		// Re-entry cooldown: wait out N closed bars before scanning again so
+		// an exit is never followed by an immediate same-price re-entry that
+		// only pays another fee round-trip.
+		if bars := cfg.ScalpMode.ReentryCooldownBars; bars > 0 {
+			if barDur := intervalDuration(interval); barDur > 0 {
+				wait := time.Duration(bars) * barDur
+				dash.LogInfo(fmt.Sprintf("[yellow]Re-entry cooldown[-] waiting %s (%d closed bars)", wait, bars))
+				time.Sleep(wait)
+			}
+		}
 		interOpDelay := 10
 		if cfg.ScalpMode.InterOpDelay > 0 {
 			interOpDelay = cfg.ScalpMode.InterOpDelay
@@ -479,8 +490,13 @@ func futuresExitLoop(
 	}
 	pnlPct := op.pnlPct
 
+	// Bars are counted as *closed klines* derived from wall-clock time; the
+	// legacy per-tick counter (one "bar" per refresh) only remains as a
+	// fallback for unknown interval tokens.
+	barDur := intervalDuration(interval)
+	ticksSinceEntry := 0
+
 	bestPrice := entryPrice
-	barsSinceEntry := 0
 	peakPnL := 0.0
 	breakevenActive := false
 
@@ -501,7 +517,11 @@ func futuresExitLoop(
 		if pnl > peakPnL {
 			peakPnL = pnl
 		}
-		barsSinceEntry++
+		ticksSinceEntry++
+		barsSinceEntry := ticksSinceEntry
+		if barDur > 0 {
+			barsSinceEntry = int(time.Since(op.EntryTime) / barDur)
+		}
 
 		var atrVal float64
 		if cfg.Indicators.Atr.Period > 0 {
@@ -564,10 +584,23 @@ func futuresExitLoop(
 				dash.LogInfo(fmt.Sprintf("[lime]BREAK-EVEN[-] peak P&L %.2f%% — exit floor pinned to net zero (fees %.2f%%)", peakPnL, feeRoundTrip))
 			}
 		}
-		if breakevenActive && effectiveSL > -feeRoundTrip {
-			// SL triggers at pnl <= -effectiveSL, so -feeRoundTrip means
-			// "close when gross profit only just covers the fees".
-			effectiveSL = -feeRoundTrip
+		if breakevenActive {
+			// Exit floor after break-even. Legacy: pinned at net zero, which
+			// harvested winners at +fees. With breakeven-trail-atr-mult the
+			// floor trails peak − mult × ATR%, giving winners room to reach TP
+			// while never dropping back below net zero.
+			floor := feeRoundTrip
+			if mult := cfg.ScalpMode.BreakevenTrailATRMult; mult > 0 && atrVal > 0 {
+				atrPct := (atrVal / entryPrice) * 100
+				if trailed := peakPnL - mult*atrPct; trailed > floor {
+					floor = trailed
+				}
+			}
+			// SL triggers at pnl <= -effectiveSL, so -floor means "close when
+			// gross profit falls back to the floor".
+			if effectiveSL > -floor {
+				effectiveSL = -floor
+			}
 		}
 
 		// Stop-loss (liquidation protection is exactly this line running 24/7)
@@ -580,11 +613,22 @@ func futuresExitLoop(
 			return "sl"
 		}
 
+		// Max-hold: unconditional time exit. Losing positions previously had
+		// no time-based way out and could bleed for hours toward the full SL;
+		// this frees capital and risk after N closed bars regardless of P&L.
+		if cfg.ScalpMode.MaxHoldBars > 0 && barsSinceEntry >= cfg.ScalpMode.MaxHoldBars {
+			dash.SetPhase("MAX HOLD")
+			dash.LogInfo(fmt.Sprintf("[yellow]Max-hold:[-] %d closed bars, P&L %+.2f%% gross / %+.2f%% net — closing unconditionally", barsSinceEntry, pnl, pnl-feeRoundTrip))
+			closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[yellow::b]MAX-HOLD[-]")
+			recordFuturesExit(cfg, ticker, closeSide, op, price, feeRoundTrip, "futures-maxhold")
+			return "ts"
+		}
+
 		// Time-stop for flat positions: only exits once gross P&L at least
 		// covers the fees, so freeing capital never converts flat to loss.
 		if cfg.ScalpMode.TimeStopBars > 0 && barsSinceEntry >= cfg.ScalpMode.TimeStopBars && pnl >= feeRoundTrip && pnl < effectiveTP {
 			dash.SetPhase("TIME STOP")
-			dash.LogInfo(fmt.Sprintf("[yellow]Time-stop:[-] %d bars, P&L %+.2f%% gross / %+.2f%% net (TP not reached)", barsSinceEntry, pnl, pnl-feeRoundTrip))
+			dash.LogInfo(fmt.Sprintf("[yellow]Time-stop:[-] %d closed bars, P&L %+.2f%% gross / %+.2f%% net (TP not reached)", barsSinceEntry, pnl, pnl-feeRoundTrip))
 			closePositionRelentlessly(dash, fc, ticker, closeSide, qty, "[yellow::b]TIME-STOP[-]")
 			recordFuturesExit(cfg, ticker, closeSide, op, price, feeRoundTrip, "futures-timestop")
 			return "ts"
@@ -666,6 +710,32 @@ func futuresRoundTripFeePct(dash *tui.Dashboard, fc *exchange.FuturesClient, cfg
 	roundTrip := taker * 2
 	dash.LogInfo(fmt.Sprintf("[yellow]Fee-aware exits[-] taker %.4f%%/leg — profits must clear %.4f%% round-trip", taker, roundTrip))
 	return roundTrip
+}
+
+// intervalDuration converts a Binance kline interval token (1m, 5m, 1h, ...)
+// into its wall-clock duration. Returns 0 for unknown tokens so callers can
+// fall back to tick-based behavior.
+func intervalDuration(interval string) time.Duration {
+	if len(interval) < 2 {
+		return 0
+	}
+	n, err := strconv.Atoi(interval[:len(interval)-1])
+	if err != nil || n <= 0 {
+		return 0
+	}
+	switch interval[len(interval)-1] {
+	case 's':
+		return time.Duration(n) * time.Second
+	case 'm':
+		return time.Duration(n) * time.Minute
+	case 'h':
+		return time.Duration(n) * time.Hour
+	case 'd':
+		return time.Duration(n) * 24 * time.Hour
+	case 'w':
+		return time.Duration(n) * 7 * 24 * time.Hour
+	}
+	return 0
 }
 
 // futuresTendency reuses the DEMA-vs-EMA tendency rule on candles already in hand.

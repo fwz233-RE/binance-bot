@@ -125,6 +125,11 @@ type Config struct {
 		MaxATRPct              float64 `yaml:"max-atr-pct"`              // when > 0, skip entries while ATR% > this (avoid news-driven chaos)
 		MACDPeakExit           bool    `yaml:"macd-peak-exit"`           // exit when MACD histogram peaks in profit, before TP/SL hit
 		RecentExtremeBars      int     `yaml:"recent-extreme-bars"`      // when > 0, block entries against a fresh N-bar extreme
+
+		// --- v0.20 exit-state-machine rework (all opt-in, bar = closed kline) ---
+		MaxHoldBars           int     `yaml:"max-hold-bars"`            // when > 0, close the position after N closed bars regardless of P&L
+		BreakevenTrailATRMult float64 `yaml:"breakeven-trail-atr-mult"` // when > 0, after break-even trail the exit floor at peak − mult × ATR% instead of pinning at net zero
+		ReentryCooldownBars   int     `yaml:"reentry-cooldown-bars"`    // when > 0, wait N closed bars after any exit before scanning for re-entry
 	} `yaml:"scalp-mode"`
 	TopGainers struct {
 		QuoteAsset     string   `yaml:"quote-asset"`

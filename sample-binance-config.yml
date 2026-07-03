@@ -100,6 +100,10 @@ scalp-mode:
   # max-atr-pct: 0.0               # regime filter: refuse entries above this ATR%
   # macd-peak-exit: false          # exit in profit when MACD histogram rolls over (3-bar peak)
   # recent-extreme-bars: 0         # block BULL near recent high / BEAR near recent low
+  # --- v0.20 exit-state-machine rework (bar = closed kline of historical-prices.interval) ---
+  # max-hold-bars: 0               # close position after N closed bars regardless of P&L (0=off)
+  # breakeven-trail-atr-mult: 0.0  # after break-even, trail exit floor at peak − mult × ATR% instead of pinning at net zero
+  # reentry-cooldown-bars: 0       # wait N closed bars after any exit before re-entering (0=off)
 
 # AI multi-agent configuration
 # API keys are read from environment variables:

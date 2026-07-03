@@ -11,7 +11,7 @@
 - **Auto Trade** — Automatically detects market tendency and switches between bull/bear strategies per operation; supports forced strategy mode and waits when the account cannot fund the detected side
 - **Bull Trade** — Buy-low-sell-high strategy for uptrending markets
 - **Bear Trade** — Sell-high-buy-low strategy for downtrending markets
-- **Scalp Mode** — High-frequency micro-trading using a scoring-based entry system. v0.14.0 adds pullback-in-trend RSI, anticipatory MACD with optional consecutive-bar confirmation, Bollinger price-touch + squeeze, RSI-divergence bonus, ATR regime filter, recent-extreme guard, ATR-based TP/SL, time-stop, break-even pin, and MACD-peak exit. v0.14.2 adds the MACD `min-separation` gate so entries only fire after a meaningful prior MACD/signal gap is now closing in
+- **Scalp Mode** — High-frequency micro-trading using a scoring-based entry system. v0.14.0 adds pullback-in-trend RSI, anticipatory MACD with optional consecutive-bar confirmation, Bollinger price-touch + squeeze, RSI-divergence bonus, ATR regime filter, recent-extreme guard, ATR-based TP/SL, time-stop, break-even pin, and MACD-peak exit. v0.14.2 adds the MACD `min-separation` gate so entries only fire after a meaningful prior MACD/signal gap is now closing in. v0.20.0 reworks the exit state machine: bars count closed klines, unconditional `max-hold-bars` exit, post-break-even ATR trailing floor, and re-entry cooldown
 - **Advanced Indicators** — RSI (+ optional SMA smoothing), MACD, DEMA, Bollinger Bands (+ width-ratio for squeeze), ADX, ATR, Stochastic RSI, swing-extrema divergence, and volume confirmation
 - **Top Gainers Monitor** — Real-time TUI dashboard of the top 24h movers on Binance
 - **Rotation Scout Mode** — Scans a configured asset basket and rotates through a bridge asset when relative ratios become fee-adjusted opportunities
@@ -287,7 +287,7 @@ holding time `hold_secs`, and an `op_id` that pairs each exit with its entry.
      binance-bot [global options] command <command args>
 
   VERSION:
-     v0.19.0
+     v0.20.0
 
   AUTHOR:
      Walter Ferreira <wferreirauy@gmail.com>
@@ -535,6 +535,10 @@ scalp-mode:
   max-atr-pct: 0.0                   # regime filter — skip entries when ATR% above this
   macd-peak-exit: false              # exit in profit when MACD histogram rolls over
   recent-extreme-bars: 0             # skip BULL near recent high / BEAR near recent low
+  # --- v0.20 exit-state-machine rework (bar = closed kline, all opt-in) ---
+  max-hold-bars: 0                   # close position after N closed bars regardless of P&L (0=off)
+  breakeven-trail-atr-mult: 0.0      # after break-even, trail exit floor at peak − mult × ATR%
+  reentry-cooldown-bars: 0           # wait N closed bars after any exit before re-entering (0=off)
 ```
 
 | Field | Type | Sample | Description |
@@ -560,12 +564,15 @@ scalp-mode:
 | `scalp-mode.fast-trend-gate` | bool | `false` | Accepts trend signal if either tendency aligns OR MACD line is on the bullish/bearish side of zero. |
 | `scalp-mode.tp-atr-multiplier` | float | `0.0` | If >0, take-profit becomes `max(takeProfit%, mult × ATR%)`. |
 | `scalp-mode.sl-atr-multiplier` | float | `0.0` | If >0, stop-loss becomes `max(stopLoss%, mult × ATR%)`. Overrides `atr-multiplier` when set. |
-| `scalp-mode.time-stop-bars` | int | `0` | Exits flat (P&L≥0 but TP not reached) positions after N bars. |
+| `scalp-mode.time-stop-bars` | int | `0` | Exits flat (P&L≥0 but TP not reached) positions after N closed bars of the trading interval (previously counted refresh ticks). |
 | `scalp-mode.breakeven-atr-mult` | float | `0.0` | Once peak P&L ≥ mult × ATR%, pins the stop-loss to the entry price. |
 | `scalp-mode.min-atr-pct` | float | `0.0` | Regime filter — refuse entries when ATR% is below this threshold (dead market). |
 | `scalp-mode.max-atr-pct` | float | `0.0` | Regime filter — refuse entries when ATR% is above this threshold (chaotic market). |
 | `scalp-mode.macd-peak-exit` | bool | `false` | Exits in profit when MACD histogram rolls over for 3 consecutive bars. |
 | `scalp-mode.recent-extreme-bars` | int | `0` | Blocks BULL entries near a recent high (BEAR near recent low) over the given lookback. |
+| `scalp-mode.max-hold-bars` | int | `0` | Unconditional time exit: closes the position after N closed bars regardless of P&L, so losing positions cannot bleed for hours. |
+| `scalp-mode.breakeven-trail-atr-mult` | float | `0.0` | After break-even activates, trails the exit floor at `peak P&L − mult × ATR%` (never below net zero) instead of pinning it at net zero, letting winners run toward TP. |
+| `scalp-mode.reentry-cooldown-bars` | int | `0` | Waits N closed bars after any exit before scanning for re-entry, preventing immediate same-price re-entries that only pay fees. |
 
 ### AI
 
