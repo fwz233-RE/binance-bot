@@ -28,6 +28,7 @@
 - **Config Validation** — Checks the YAML config file before starting a trading session
 - **Detailed Order Reasoning** — Activity Log shows which entry/exit conditions were met (✓/✗) before each trade
 - **File Logging** — All trade events and errors are written to `binance-bot.log` alongside the TUI display
+- **Live Position Panel** — v0.25.0: the TUI Parameters panel shows the futures session's leverage, margin type, direction, and live round-trip commission; once a position is open it adds side, entry price, exchange-reported liquidation price, notional, margin, and — refreshed every poll — mark price, gross/net P&L, unrealized USDT, and ROE
 - **Fee-Aware Targets** — Take-profit thresholds can be adjusted by live Binance taker fees plus a configurable safety buffer. v0.24.0: the futures commission rate is served from a 5-minute cache and re-read on every exit poll, so VIP-tier or BNB-discount changes reprice fee gates mid-position instead of at the next session
 
 ## Download
@@ -336,7 +337,7 @@ Isolation guarantees:
      binance-bot [global options] command <command args>
 
   VERSION:
-     v0.24.0
+     v0.25.0
 
   AUTHOR:
      Walter Ferreira <wferreirauy@gmail.com>
