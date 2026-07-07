@@ -40,6 +40,13 @@ type Dashboard struct {
 	countdown     int
 	countdownStop chan struct{}
 
+	// Parameters-panel state: session params, live round-trip fee, and the
+	// open position summary are stored so any of the three can update
+	// independently and trigger a full re-render.
+	params       *TradeParams
+	feeRoundTrip float64
+	position     *PositionInfo
+
 	fileLogger *FileLogger
 	cfg        *config.Config
 
@@ -465,20 +472,150 @@ type TradeParams struct {
 	RoundPrice uint
 	RoundAmt   uint
 	MaxOps     uint
+
+	// Futures session settings (zero values = spot session, rows hidden).
+	Leverage   int
+	MarginType string
+	Direction  string
+}
+
+// PositionInfo is the live-position summary rendered under the parameters:
+// what the exchange reports, not what the strategy assumes.
+type PositionInfo struct {
+	Side             string  // "LONG" / "SHORT"
+	EntryPrice       float64
+	LiquidationPrice float64
+	Notional         float64 // qty × entry, in quote asset
+	Margin           float64 // notional / leverage
+
+	// Live P&L, refreshed every exit-loop poll via UpdatePositionPnL.
+	// Zero MarkPrice means "no tick received yet" and hides the block.
+	MarkPrice   float64
+	GrossPnLPct float64 // price move only
+	NetPnLPct   float64 // gross − round-trip commission: the real number
 }
 
 // SetParams populates the parameters panel with the current trade settings.
 func (d *Dashboard) SetParams(p *TradeParams) {
+	d.mu.Lock()
+	d.params = p
+	d.mu.Unlock()
+	d.renderParams()
+}
+
+// SetLiveFee updates the round-trip fee row (percent of notional). Called
+// whenever the cached commission lookup returns a different rate, so the
+// panel always shows what exits are actually being charged.
+func (d *Dashboard) SetLiveFee(roundTripPct float64) {
+	d.mu.Lock()
+	changed := d.feeRoundTrip != roundTripPct
+	d.feeRoundTrip = roundTripPct
+	d.mu.Unlock()
+	if changed {
+		d.renderParams()
+	}
+}
+
+// SetPosition shows the open position summary (entry, liquidation, margin).
+func (d *Dashboard) SetPosition(pos *PositionInfo) {
+	d.mu.Lock()
+	d.position = pos
+	d.mu.Unlock()
+	d.renderParams()
+}
+
+// UpdatePositionPnL refreshes the live P&L rows of the position block on
+// every exit-loop poll without touching the static fields (entry,
+// liquidation). No-op while no position is displayed.
+func (d *Dashboard) UpdatePositionPnL(markPrice, grossPnLPct, netPnLPct float64) {
+	d.mu.Lock()
+	if d.position == nil {
+		d.mu.Unlock()
+		return
+	}
+	d.position.MarkPrice = markPrice
+	d.position.GrossPnLPct = grossPnLPct
+	d.position.NetPnLPct = netPnLPct
+	d.mu.Unlock()
+	d.renderParams()
+}
+
+// ClearPosition removes the position summary after an exit.
+func (d *Dashboard) ClearPosition() {
+	d.SetPosition(nil)
+}
+
+// renderParams redraws the parameters panel from the stored state.
+func (d *Dashboard) renderParams() {
+	d.mu.Lock()
+	p := d.params
+	fee := d.feeRoundTrip
+	// Copy the position by value: UpdatePositionPnL mutates it every poll
+	// and rendering must not read those fields outside the lock.
+	var pos *PositionInfo
+	if d.position != nil {
+		posCopy := *d.position
+		pos = &posCopy
+	}
+	d.mu.Unlock()
+	if p == nil {
+		return
+	}
+
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf(" [white::b]Amount:[:-]      [yellow]%g[-]\n", p.Amount))
 	b.WriteString(fmt.Sprintf(" [white::b]Stop-Loss:[:-]   [red]%.2f%%[-]\n", p.StopLoss))
 	b.WriteString(fmt.Sprintf(" [white::b]Take-Profit:[:-] [green]%.2f%%[-]\n", p.TakeProfit))
-	b.WriteString(fmt.Sprintf(" [white::b]Buy Factor:[:-]  [white]%g[-]\n", p.BuyFactor))
-	b.WriteString(fmt.Sprintf(" [white::b]Sell Factor:[:-] [white]%g[-]\n", p.SellFactor))
+	if p.Leverage > 0 {
+		levColor := "yellow"
+		if p.Leverage > 5 {
+			levColor = "red"
+		}
+		b.WriteString(fmt.Sprintf(" [white::b]Leverage:[:-]    [%s::b]%dx[-] [gray]%s[-]\n",
+			levColor, p.Leverage, strings.ToUpper(p.MarginType)))
+	}
+	if p.Direction != "" {
+		b.WriteString(fmt.Sprintf(" [white::b]Direction:[:-]   [cyan]%s[-]\n", strings.ToUpper(p.Direction)))
+	}
+	if fee > 0 {
+		b.WriteString(fmt.Sprintf(" [white::b]Fee (R/T):[:-]   [orange]%.4f%%[-] [gray]live[-]\n", fee))
+	}
+	if p.BuyFactor != 0 || p.SellFactor != 0 {
+		b.WriteString(fmt.Sprintf(" [white::b]Buy Factor:[:-]  [white]%g[-]\n", p.BuyFactor))
+		b.WriteString(fmt.Sprintf(" [white::b]Sell Factor:[:-] [white]%g[-]\n", p.SellFactor))
+	}
 	b.WriteString(fmt.Sprintf(" [white::b]Round:[:-]       [gray]price=%d amt=%d[-]\n", p.RoundPrice, p.RoundAmt))
 	b.WriteString(fmt.Sprintf(" [white::b]Max Ops:[:-]     [cyan]%d[-]", p.MaxOps))
+	if pos != nil {
+		sideColor := "green"
+		if pos.Side == "SHORT" {
+			sideColor = "red"
+		}
+		b.WriteString(fmt.Sprintf("\n [gray]────────────────────[-]\n"))
+		b.WriteString(fmt.Sprintf(" [white::b]Position:[:-]    [%s::b]%s[-] @ [white]%g[-]\n", sideColor, pos.Side, pos.EntryPrice))
+		if pos.LiquidationPrice > 0 {
+			b.WriteString(fmt.Sprintf(" [white::b]Liq. Price:[:-]  [red::b]%g[-]\n", pos.LiquidationPrice))
+		}
+		b.WriteString(fmt.Sprintf(" [white::b]Notional:[:-]    [white]%.2f[-]  [white::b]Margin:[:-] [yellow]%.2f[-]", pos.Notional, pos.Margin))
+		if pos.MarkPrice > 0 {
+			netColor := "green"
+			if pos.NetPnLPct < 0 {
+				netColor = "red"
+			}
+			b.WriteString(fmt.Sprintf("\n [white::b]Mark:[:-]        [white]%g[-]\n", pos.MarkPrice))
+			b.WriteString(fmt.Sprintf(" [white::b]P\u0026L:[:-]         [%s::b]%+.2f%% net[-] [gray](%+.2f%% gross)[-]", netColor, pos.NetPnLPct, pos.GrossPnLPct))
+			// Quote-asset P&L and return on margin: the leverage-amplified
+			// numbers the exchange UI shows, so both views agree live.
+			if pos.Notional > 0 && pos.Margin > 0 {
+				netQuote := pos.Notional * pos.NetPnLPct / 100
+				roePct := netQuote / pos.Margin * 100
+				b.WriteString(fmt.Sprintf("\n [white::b]Unrealized:[:-]  [%s]%+.4f[-] [gray]USDT[-]  [white::b]ROE:[:-] [%s]%+.2f%%[-]", netColor, netQuote, netColor, roePct))
+			}
+		}
+	}
+	text := b.String()
 	d.app.QueueUpdateDraw(func() {
-		d.paramsPanel.SetText(b.String())
+		d.paramsPanel.SetText(text)
 	})
 }
 

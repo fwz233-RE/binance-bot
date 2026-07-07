@@ -96,9 +96,18 @@ func FuturesTrade(
 	go func() {
 		defer dash.Stop()
 		dash.SetRefreshInterval(refreshInterval)
+		lev := cfg.Futures.Leverage
+		if lev <= 0 {
+			lev = 2
+		}
+		mt := cfg.Futures.MarginType
+		if mt == "" {
+			mt = "isolated"
+		}
 		dash.SetParams(&tui.TradeParams{
 			Amount: qty, StopLoss: stopLoss, TakeProfit: takeProfit,
 			RoundPrice: roundPrice, RoundAmt: roundAmount, MaxOps: max_ops,
+			Leverage: lev, MarginType: mt, Direction: direction,
 		})
 		dash.LogInfo("[red::b]FUTURES MAINNET[-] — real funds and liquidation risk")
 		logStartupStatus(dash, cfg, aiOrch)
@@ -272,6 +281,7 @@ func futuresTradeLoop(
 	// decision must clear this floor or a "profitable" close is a net loss.
 	feeRoundTrip := futuresRoundTripFeePct(dash, fc, cfg, ticker)
 	session.setFee(feeRoundTrip)
+	dash.SetLiveFee(feeRoundTrip)
 
 	// Adopt a position the exchange already holds (crash/kill recovery):
 	// manage its exit first — scanning new entries with an unmanaged
@@ -279,9 +289,11 @@ func futuresTradeLoop(
 	if adopted := reconcileFuturesPosition(dash, fc, cfg, ticker); adopted != nil {
 		dash.SetOperation(operation)
 		session.setOpen(*adopted)
+		showFuturesPosition(dash, fc, cfg, ticker, *adopted)
 		dash.SetPhase("MONITORING EXIT")
 		_, netPnL := futuresExitLoop(dash, fc, cfg, aiOrch, ticker, scoin, dcoin, *adopted, stopLoss, takeProfit, roundPrice, roundAmount, refreshInterval, feeRoundTrip)
 		session.clear()
+		dash.ClearPosition()
 		if netPnL < 0 {
 			consecutiveLosses++
 		}
@@ -526,6 +538,7 @@ func futuresTradeLoop(
 				Direction: op.direction(), Operation: operation, OpID: op.ID,
 			})
 			session.setOpen(op)
+			showFuturesPosition(dash, fc, cfg, ticker, op)
 			break
 		}
 
@@ -539,6 +552,7 @@ func futuresTradeLoop(
 		dash.SetPhase("MONITORING EXIT")
 		_, netPnL := futuresExitLoop(dash, fc, cfg, aiOrch, ticker, scoin, dcoin, op, stopLoss, takeProfit, roundPrice, roundAmount, refreshInterval, feeRoundTrip)
 		session.clear()
+		dash.ClearPosition()
 
 		// Loss cooldown keys off the realized outcome, not the exit
 		// mechanism: a profitable break-even "stop" is not a loss, and a
@@ -663,6 +677,8 @@ func futuresExitLoop(
 		// BNB-discount flip must reprice every fee-gated exit mid-position,
 		// not just at the next session start.
 		feeRoundTrip = refreshFeeRoundTrip(fc, cfg, ticker, feeRoundTrip)
+		dash.SetLiveFee(feeRoundTrip)
+		dash.UpdatePositionPnL(exitPrice, pnl, pnl-feeRoundTrip)
 		feeFloor = feeRoundTrip
 		if feeRoundTrip > 0 {
 			feeFloor += cfg.Fees.BufferPct
@@ -897,6 +913,31 @@ func refreshFeeRoundTrip(fc *exchange.FuturesClient, cfg *config.Config, ticker 
 		return taker * 2
 	}
 	return fallback
+}
+
+// showFuturesPosition surfaces the open position on the dashboard: side,
+// entry, notional, margin, and — from the exchange, not a local guess — the
+// liquidation price. Best-effort: a failed position read still renders the
+// locally-known fields.
+func showFuturesPosition(dash *tui.Dashboard, fc *exchange.FuturesClient, cfg *config.Config, ticker string, op futuresOp) {
+	leverage := cfg.Futures.Leverage
+	if leverage <= 0 {
+		leverage = 2
+	}
+	info := &tui.PositionInfo{
+		Side:       op.direction(),
+		EntryPrice: op.EntryPrice,
+		Notional:   op.Qty * op.EntryPrice,
+		Margin:     op.Qty * op.EntryPrice / float64(leverage),
+	}
+	if pos, err := fc.FuturesGetPosition(ticker); err == nil && pos.LiquidationPrice > 0 {
+		info.LiquidationPrice = pos.LiquidationPrice
+	}
+	dash.SetPosition(info)
+	if info.LiquidationPrice > 0 {
+		dash.LogInfo(fmt.Sprintf("[yellow]Position[-] %s @ %g — liquidation at [red::b]%g[-] (margin %.2f)",
+			info.Side, info.EntryPrice, info.LiquidationPrice, info.Margin))
+	}
 }
 
 // intervalDuration converts a Binance kline interval token (1m, 5m, 1h, ...)
