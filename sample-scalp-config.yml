@@ -23,9 +23,9 @@ order-management:
 
 fees:
   enabled: true
-  default-taker-pct: 0.1
-  buffer-pct: 0.05
-  buy-back-buffer-pct: 0.2
+  default-taker-pct: 0.05  # Binance USDT-M VIP0 taker; live commissionRate API overrides this
+  buffer-pct: 0.03
+  buy-back-buffer-pct: 0.15
 
 tendency:
   interval: "1m"        # fast tendency on 1m (was 3m)
@@ -78,7 +78,7 @@ trailing-stop:
 # if you want to A/B test the impact of each.
 scalp-mode:
   enabled: true
-  min-score: 4              # weighted scoring is on → use a slightly higher bar
+  min-score: 5              # weighted scoring is on → raised bar filters marginal entries
   post-buy-delay: 5         # seconds after fill before monitoring exit
   inter-op-delay: 10        # seconds between completed ops
   require-rsi-exit: false   # don't require RSI declining for take-profit
@@ -97,16 +97,16 @@ scalp-mode:
   divergence-lookback: 14
   divergence-swing-pad: 2
   fast-trend-gate: true         # accept tendency aligned OR MACD line on correct side of zero
-  tp-atr-multiplier: 1.2        # TP = max(--tp, 1.2 × ATR%) — scales with volatility
-  sl-atr-multiplier: 1.5        # SL = max(--sl, 1.5 × ATR%) — overrides atr-multiplier
-  time-stop-bars: 15            # close stale flat positions after 15 minutes (15 × 1m bars)
-  breakeven-atr-mult: 1.0       # pin SL to entry once peak P&L ≥ 1.0 × ATR%
+  tp-atr-multiplier: 2.0        # TP = max(--tp, 2.0 × ATR%) — winners must outrun fees meaningfully
+  sl-atr-multiplier: 1.8        # SL = max(--sl, 1.8 × ATR%) — overrides atr-multiplier
+  time-stop-bars: 20            # close stale flat positions after 20 minutes (20 × 1m bars)
+  breakeven-atr-mult: 1.5       # pin SL to entry once peak P&L ≥ 1.5 × ATR% (later pin = room to run)
   min-atr-pct: 0.05             # skip entries below 0.05% ATR (dead market)
   max-atr-pct: 3.0              # skip entries above 3.0% ATR (chaotic spike)
   macd-peak-exit: true          # exit profitable trade when MACD histogram rolls over
   recent-extreme-bars: 30       # block BULL entries within 0.1×ATR of last 30-bar high (BEAR mirror)
   # --- v0.20 exit-state-machine rework (bar = closed kline of historical-prices.interval) ---
-  max-hold-bars: 60             # hard time exit: close after 60 closed bars (1h on 1m) regardless of P&L
+  max-hold-bars: 45             # hard time exit: close after 45 closed bars regardless of P&L
   breakeven-trail-atr-mult: 1.0 # after break-even, trail exit floor at peak − 1.0 × ATR% (lets winners run to TP)
   reentry-cooldown-bars: 3      # wait 3 closed bars after any exit before re-entering
 
