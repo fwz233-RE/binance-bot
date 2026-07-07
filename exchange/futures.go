@@ -13,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -41,7 +42,27 @@ func envOr(key, fallback string) string {
 type FuturesClient struct {
 	baseURL string
 	http    *http.Client
+
+	// feeCache holds per-symbol taker rates so exit decisions can read the
+	// live commission without a REST round-trip on every loop iteration.
+	feeCache    sync.Map // map[string]*feeEntry
+	feeCacheTTL time.Duration
 }
+
+// feeEntry is one cached commission-rate lookup.
+type feeEntry struct {
+	takerPct  float64
+	fetchedAt time.Time
+}
+
+// DefaultTakerFeePct is the Binance USDT-M VIP0 taker rate (percent per leg),
+// used only when the live commission lookup has never succeeded.
+const DefaultTakerFeePct = 0.05
+
+// feeCacheDefaultTTL bounds how stale a cached commission rate may get before
+// the next read triggers a refresh. Rates change on VIP-tier or BNB-discount
+// flips, so minutes-level staleness is acceptable.
+const feeCacheDefaultTTL = 5 * time.Minute
 
 // NewFuturesClient builds a mainnet futures client and lazily starts the
 // shared server-time sync loop.
@@ -373,6 +394,37 @@ func (c *FuturesClient) FuturesTakerFeePct(symbol string) (float64, error) {
 		return 0, fmt.Errorf("futures: parse commission rate: %w", err)
 	}
 	return rate * 100, nil
+}
+
+// FuturesTakerFeePctCached returns the taker rate for a symbol from an
+// in-process cache, refreshing from /fapi/v1/commissionRate when the entry is
+// older than the TTL. On lookup failure it degrades gracefully: last known
+// value first, VIP0 default last. Never returns an error so exit paths can
+// always price fees.
+func (c *FuturesClient) FuturesTakerFeePctCached(symbol string) float64 {
+	ttl := c.feeCacheTTL
+	if ttl == 0 {
+		ttl = feeCacheDefaultTTL
+	}
+
+	if val, ok := c.feeCache.Load(symbol); ok {
+		entry := val.(*feeEntry)
+		if time.Since(entry.fetchedAt) < ttl {
+			return entry.takerPct
+		}
+	}
+
+	fresh, err := c.FuturesTakerFeePct(symbol)
+	if err == nil && fresh > 0 {
+		c.feeCache.Store(symbol, &feeEntry{takerPct: fresh, fetchedAt: time.Now()})
+		return fresh
+	}
+
+	// Refresh failed: a stale rate beats a guessed rate.
+	if val, ok := c.feeCache.Load(symbol); ok {
+		return val.(*feeEntry).takerPct
+	}
+	return DefaultTakerFeePct
 }
 
 // FuturesPremiumIndex holds the mark price and funding snapshot for a symbol

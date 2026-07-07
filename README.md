@@ -20,7 +20,7 @@
 - **Managed Orders** — Optional buy/sell timeouts with partial-fill handling; unfilled entries return to scanning instead of advancing to exit monitoring
 - **Pre-Order Balance Checks** — Reads Binance spot account balances before placing orders and blocks buys/sells that exceed available free funds
 - **Persistent History API** — Stores trade/scout history in JSONL and serves it through a small local HTTP API
-- **AI Multi-Agent System** — Concurrent analysis from OpenAI, DeepSeek, and Claude with weighted consensus; when enabled, entries require explicit AI approval at the configured confidence threshold
+- **AI Multi-Agent System** — Concurrent analysis from OpenAI, DeepSeek, and Claude with weighted consensus; when enabled, entries require explicit AI approval at the configured confidence threshold. v0.24.0: exit consensus receives the open position's entry price, gross P&L, live round-trip commission, and net P&L, and is instructed to judge profitability strictly on net P&L
 - **Sentiment Analysis** — Real-time news headlines and Fear & Greed Index integrated into AI decisions
 - **Trailing Stop-Loss** — Dynamically locks in profits as price moves favorably
 - **Full OHLCV Analysis** — Uses complete candlestick data instead of close-only prices
@@ -28,7 +28,7 @@
 - **Config Validation** — Checks the YAML config file before starting a trading session
 - **Detailed Order Reasoning** — Activity Log shows which entry/exit conditions were met (✓/✗) before each trade
 - **File Logging** — All trade events and errors are written to `binance-bot.log` alongside the TUI display
-- **Fee-Aware Targets** — Take-profit thresholds can be adjusted by live Binance taker fees plus a configurable safety buffer
+- **Fee-Aware Targets** — Take-profit thresholds can be adjusted by live Binance taker fees plus a configurable safety buffer. v0.24.0: the futures commission rate is served from a 5-minute cache and re-read on every exit poll, so VIP-tier or BNB-discount changes reprice fee gates mid-position instead of at the next session
 
 ## Download
 
@@ -237,7 +237,8 @@ closes them with reduce-only market orders (take-profit, stop-loss, trailing
 stop, time-stop). Exit orders are retried indefinitely — a leveraged position
 is never left unmanaged. Entries are skipped (with a single log line) while
 the futures wallet cannot fund the required margin. Exits are fee-aware: the
-live taker rate is fetched per session (falling back to
+live taker rate is fetched from `/fapi/v1/commissionRate` and refreshed
+through a 5-minute in-process cache on every exit poll (falling back to
 `fees.default-taker-pct` when the lookup fails), take-profit targets are
 floored at round-trip fees + buffer, and every net-zero exit gate
 (break-even floor, time-stop, MACD-peak) also clears fees **plus**
@@ -248,7 +249,9 @@ micro-losses. Entries are refused while ATR% is below the round-trip fee
 dashboard shows both gross and net P&L. When `ai.enabled` is
 set, the same AI multi-agent consensus used by the spot strategies gates
 futures entries (long = BUY approval, short = SELL approval) and confirms
-take-profit exits. The MACD-peak early exit locks gains on histogram
+take-profit exits; the exit snapshot carries entry price, gross P&L, the
+live round-trip commission, and net P&L so agents judge real — not
+nominal — profitability. The MACD-peak early exit locks gains on histogram
 rollover once fees are covered. Leverage and margin type come from the
 `futures` config section. **Orders go to the live exchange and trade real
 funds.**
@@ -333,7 +336,7 @@ Isolation guarantees:
      binance-bot [global options] command <command args>
 
   VERSION:
-     v0.23.0
+     v0.24.0
 
   AUTHOR:
      Walter Ferreira <wferreirauy@gmail.com>

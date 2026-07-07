@@ -658,6 +658,16 @@ func futuresExitLoop(
 		if pnl > peakPnL {
 			peakPnL = pnl
 		}
+
+		// Live commission refresh (cached, 5m TTL): a VIP-tier change or a
+		// BNB-discount flip must reprice every fee-gated exit mid-position,
+		// not just at the next session start.
+		feeRoundTrip = refreshFeeRoundTrip(fc, cfg, ticker, feeRoundTrip)
+		feeFloor = feeRoundTrip
+		if feeRoundTrip > 0 {
+			feeFloor += cfg.Fees.BufferPct
+		}
+
 		ticksSinceEntry++
 		barsSinceEntry := ticksSinceEntry
 		if barDur > 0 {
@@ -813,6 +823,13 @@ func futuresExitLoop(
 				snapshot := &ai.TechnicalSnapshot{
 					Symbol: ticker, Price: price, PrevPrice: prevPrice,
 					Tendency: exitTendency,
+					// Position economics: the AI must judge the exit on net
+					// P&L (live commission included), not the gross move.
+					EntryPrice:      entryPrice,
+					GrossPnLPct:     pnl,
+					FeeRoundTripPct: feeRoundTrip,
+					NetPnLPct:       pnl - feeRoundTrip,
+					HoldDurationSec: time.Since(op.EntryTime).Seconds(),
 				}
 				if len(rsi) > 0 {
 					snapshot.RSI = rsi[len(rsi)-1]
@@ -866,6 +883,20 @@ func futuresRoundTripFeePct(dash *tui.Dashboard, fc *exchange.FuturesClient, cfg
 	roundTrip := taker * 2
 	dash.LogInfo(fmt.Sprintf("[yellow]Fee-aware exits[-] taker %.4f%%/leg — profits must clear %.4f%% round-trip", taker, roundTrip))
 	return roundTrip
+}
+
+// refreshFeeRoundTrip re-reads the live commission from the client's cache
+// and returns the round-trip cost. Honors the fees.enabled kill-switch and
+// falls back to the caller's current value when the cache has nothing better,
+// so a transient lookup failure never zeroes the fee gates mid-position.
+func refreshFeeRoundTrip(fc *exchange.FuturesClient, cfg *config.Config, ticker string, fallback float64) float64 {
+	if cfg != nil && !cfg.Fees.Enabled {
+		return 0
+	}
+	if taker := fc.FuturesTakerFeePctCached(ticker); taker > 0 {
+		return taker * 2
+	}
+	return fallback
 }
 
 // intervalDuration converts a Binance kline interval token (1m, 5m, 1h, ...)

@@ -57,6 +57,15 @@ type TechnicalSnapshot struct {
 	ADX            float64
 	Volume         float64
 	AvgVolume      float64
+
+	// Open-position context (exit decisions only; zero values when flat).
+	// NetPnLPct is the number that decides real profitability: gross price
+	// move minus the live round-trip commission — never a guessed fee.
+	EntryPrice      float64
+	GrossPnLPct     float64
+	FeeRoundTripPct float64
+	NetPnLPct       float64
+	HoldDurationSec float64
 }
 
 // FormatForPrompt returns technical data formatted for LLM consumption
@@ -80,6 +89,22 @@ func (ts *TechnicalSnapshot) FormatForPrompt() string {
 	}
 	if ts.AvgVolume > 0 {
 		b.WriteString(fmt.Sprintf("Volume: %.2f (Avg: %.2f, Ratio: %.2fx)\n", ts.Volume, ts.AvgVolume, ts.Volume/ts.AvgVolume))
+	}
+	if ts.EntryPrice > 0 {
+		b.WriteString("\n=== OPEN POSITION ===\n")
+		b.WriteString(fmt.Sprintf("Entry Price: %.8f\n", ts.EntryPrice))
+		b.WriteString(fmt.Sprintf("Gross P&L: %+.3f%% (before fees)\n", ts.GrossPnLPct))
+		b.WriteString(fmt.Sprintf("Round-Trip Fees: %.3f%% (live Binance commission, both legs)\n", ts.FeeRoundTripPct))
+		b.WriteString(fmt.Sprintf("Net P&L: %+.3f%% <-- ACTUAL profit after fees\n", ts.NetPnLPct))
+		if ts.HoldDurationSec > 0 {
+			b.WriteString(fmt.Sprintf("Hold Duration: %.0f seconds\n", ts.HoldDurationSec))
+		}
+		switch {
+		case ts.NetPnLPct < 0:
+			b.WriteString("WARNING: position is LOSING real money after fees.\n")
+		case ts.NetPnLPct < ts.FeeRoundTripPct*0.5:
+			b.WriteString("CAUTION: profit barely covers fees; exiting now locks in almost nothing.\n")
+		}
 	}
 	return b.String()
 }
@@ -204,7 +229,13 @@ RULES:
 5. For BULL trades: look for buying opportunities (dips, oversold, bullish crossovers).
 6. For BEAR trades: look for selling opportunities (peaks, overbought, bearish crossovers).
 7. A Fear & Greed Index below 25 = Extreme Fear (contrarian BUY signal), above 75 = Extreme Greed (contrarian SELL signal).
-8. Weight recent news sentiment: negative news in uptrend = caution, positive news in downtrend = caution.`, tradeType)
+8. Weight recent news sentiment: negative news in uptrend = caution, positive news in downtrend = caution.
+9. FEE AWARENESS (when an OPEN POSITION section is present):
+   - Judge profitability ONLY by "Net P&L" (already net of the live round-trip commission), NEVER by "Gross P&L".
+   - Gross +0.08%% with Net -0.02%% is a LOSING trade; do not call it profitable.
+   - Recommend a profit-taking exit only when Net P&L exceeds +0.15%%.
+   - If Net P&L sits between 0%% and +0.10%%, prefer HOLD unless indicators clearly confirm a reversal or the position has been held over 30 minutes with no progress.
+   - If Net P&L is below -0.50%%, favor exiting immediately to cut the loss.`, tradeType)
 }
 
 func buildUserPrompt(ts *TechnicalSnapshot, sd *SentimentData) string {
