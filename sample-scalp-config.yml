@@ -10,10 +10,10 @@ base-url: "https://api1.binance.com"
 data-dir: ".binance-bot"
 
 historical-prices:
-  period: 50            # shorter lookback → faster indicator response
-  interval: "1m"        # 1-minute candles for rapid signals
+  period: 60            # ~3h of 3m candles — enough depth for ATR(14)/ADX(14)
+  interval: "3m"        # 3-minute candles: 1m proved to be fee-dominated noise (v0.26.0)
 
-refresh-interval: 10    # poll every 10 seconds for faster reaction to market changes
+refresh-interval: 15    # poll every 15 seconds — matched to slower 3m bar cadence
 
 order-management:
   buy-timeout-minutes: 5
@@ -28,45 +28,45 @@ fees:
   buy-back-buffer-pct: 0.15
 
 tendency:
-  interval: "1m"        # fast tendency on 1m (was 3m)
-  period: 60            # ~1h of 1m candles for trading-interval tendency (decoupled from historical-prices.period)
+  interval: "3m"        # match main bar interval for consistency
+  period: 60            # ~3h of 3m candles for trading-interval tendency
   fast-length: 5        # DEMA(5) — reactive fast MA
   slow-length: 20       # EMA(20) — short slow MA for snappy crossovers
   confirm-bars: 2       # require 2 consecutive bars agreeing to confirm direction (anti-flicker)
-  htf-enabled: true     # block entries when 5m trend opposes direction
-  htf-interval: "5m"    # higher-timeframe gate for scalp mode
-  htf-period: 80        # ~6.5h of 5m candles
+  htf-enabled: true     # block entries when 15m trend opposes direction
+  htf-interval: "15m"   # higher-timeframe gate (5× main interval)
+  htf-period: 60        # ~15h of 15m candles
   htf-fast-length: 9    # HTF DEMA(9)
-  htf-slow-length: 30   # HTF EMA(30) — regime filter, still reactive vs old EMA(period)
+  htf-slow-length: 30   # HTF EMA(30) — regime filter
   htf-confirm-bars: 1   # HTF gate flips fast on a single confirmed bar
 
 indicators:
   rsi:
-    interval: "1m"      # fast RSI timeframe (was 5m)
-    length: 7           # shorter RSI period = more reactive (was 14)
-    upper-limit: 65     # more permissive entry threshold (was 70)
+    interval: "3m"      # match main timeframe
+    length: 10          # 10-period RSI on 3m (was 7 on 1m — equivalent reactivity)
+    upper-limit: 65     # more permissive entry threshold
     middle-limit: 50
-    lower-limit: 35     # wider entry zone (was 30)
-    smooth-length: 3    # 3-bar SMA smoothing on RSI to reduce flicker on 1m candles
+    lower-limit: 35     # wider entry zone
+    smooth-length: 2    # 2-bar SMA smoothing reduces flicker without lag
   dema:
-    length: 5           # faster DEMA (was 9)
+    length: 5           # faster DEMA
   macd:
-    fast-length: 6      # faster MACD (was 12)
-    slow-length: 13     # (was 26)
-    signal-length: 5    # (was 9)
-    consecutive-bars: 2 # require 2 consecutive bars of histogram direction before MACD signal counts
-    min-separation: 0.002         # MACD signal only fires after histogram was at least this far from zero (in the prior direction) within the lookback — filters out flat noise
+    fast-length: 6      # faster MACD
+    slow-length: 13     
+    signal-length: 5    
+    consecutive-bars: 3 # 3 consecutive bars (was 2) → stricter signal quality
+    min-separation: 0.002         # MACD signal only fires after histogram was at least this far from zero
     min-separation-lookback: 20   # bars to scan for the prior peak separation
   bollinger-bands:
-    length: 10          # tighter bands = more entry signals (was 20)
-    multiplier: 1.5     # narrower bands (was 2.0)
+    length: 10          # tighter bands = more entry signals
+    multiplier: 1.5     # narrower bands
   atr:
-    period: 7           # shorter ATR (was 14)
+    period: 14          # standard ATR period (was 7 — too short for fee-aware trading)
   adx:
-    period: 7           # shorter ADX (was 14)
-    threshold: 15       # accept weaker trends (was 25)
+    period: 14          # standard ADX period (was 7)
+    threshold: 15       # accept weaker trends
   volume:
-    ma-period: 10       # shorter volume MA (was 20)
+    ma-period: 10       # shorter volume MA
 
 trailing-stop:
   enabled: true
@@ -78,7 +78,7 @@ trailing-stop:
 # if you want to A/B test the impact of each.
 scalp-mode:
   enabled: true
-  min-score: 5              # weighted scoring is on → raised bar filters marginal entries
+  min-score: 7              # raised from 5 → 7: needs ~54% conditions met vs 38% (v0.26.0)
   post-buy-delay: 5         # seconds after fill before monitoring exit
   inter-op-delay: 10        # seconds between completed ops
   require-rsi-exit: false   # don't require RSI declining for take-profit
@@ -93,20 +93,20 @@ scalp-mode:
   bb-squeeze-ratio: 0.85
   bb-squeeze-window: 20
   volume-strong-multiplier: 1.5 # bonus when current volume > 1.5 × MA
-  divergence-enabled: true      # ×3 bonus on RSI divergence
+  divergence-enabled: false     # disabled: 3× bonus was diluting base signal quality (v0.26.0)
   divergence-lookback: 14
   divergence-swing-pad: 2
   fast-trend-gate: true         # accept tendency aligned OR MACD line on correct side of zero
-  tp-atr-multiplier: 2.0        # TP = max(--tp, 2.0 × ATR%) — winners must outrun fees meaningfully
-  sl-atr-multiplier: 1.8        # SL = max(--sl, 1.8 × ATR%) — overrides atr-multiplier
-  time-stop-bars: 20            # close stale flat positions after 20 minutes (20 × 1m bars)
-  breakeven-atr-mult: 1.5       # pin SL to entry once peak P&L ≥ 1.5 × ATR% (later pin = room to run)
-  min-atr-pct: 0.05             # skip entries below 0.05% ATR (dead market)
-  max-atr-pct: 3.0              # skip entries above 3.0% ATR (chaotic spike)
+  tp-atr-multiplier: 3.2        # raised from 2.0 → 3.2: ensures net profit > fees (v0.26.0)
+  sl-atr-multiplier: 1.6        # tightened from 1.8 → 1.6: improves risk/reward (v0.26.0)
+  time-stop-bars: 12            # 12×3m = 36 min (was 20×1m = 20 min)
+  breakeven-atr-mult: 2.8       # raised from 1.5 → 2.8: delay lock to give winners room (v0.26.0)
+  min-atr-pct: 0.15             # raised from 0.05 → 0.15: refuse dead-market entries (v0.26.0)
+  max-atr-pct: 2.0              # lowered from 3.0 → 2.0: avoid chaotic spikes (v0.26.0)
   macd-peak-exit: true          # exit profitable trade when MACD histogram rolls over
-  recent-extreme-bars: 30       # block BULL entries within 0.1×ATR of last 30-bar high (BEAR mirror)
+  recent-extreme-bars: 0        # disabled: was blocking valid trend entries (v0.26.0)
   # --- v0.20 exit-state-machine rework (bar = closed kline of historical-prices.interval) ---
-  max-hold-bars: 45             # hard time exit: close after 45 closed bars regardless of P&L
+  max-hold-bars: 20             # lowered from 45 → 20: 20×3m = 60 min hard exit (v0.26.0)
   breakeven-trail-atr-mult: 1.0 # after break-even, trail exit floor at peak − 1.0 × ATR% (lets winners run to TP)
   reentry-cooldown-bars: 3      # wait 3 closed bars after any exit before re-entering
 
