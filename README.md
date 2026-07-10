@@ -5,7 +5,7 @@
 
 ## Features
 
-- **USDT-M Futures** — `futures-trade` opens leveraged long/short positions on Binance perpetual futures with isolated/crossed margin, configurable leverage, and reduce-only exits with relentless retry. v0.21.0 adds mark-price exit pricing, an HTF trend gate for entry direction, tendency evaluation on `tendency.interval`, and a funding-rate entry filter. v0.23.0 makes the session crash-safe: startup reconciliation adopts positions the exchange already holds, the operation counter survives restarts, and shutdown closes and journals any open position
+- **USDT-M Futures** — `futures-trade` opens leveraged long/short positions on Binance perpetual futures with isolated/crossed margin, configurable leverage, and reduce-only exits with relentless retry. v0.21.0 adds mark-price exit pricing, an HTF trend gate for entry direction, tendency evaluation on `tendency.interval`, and a funding-rate entry filter. v0.23.0 makes the session crash-safe: startup reconciliation adopts positions the exchange already holds, the operation counter survives restarts, and shutdown closes and journals any open position. v0.23.1 adds bounded recovery for transient EOF, connection reset, and timeout failures on idempotent futures reads without replaying order writes
 - **24/7 Infinite Mode** — Set `--operations 0` to run continuously until manually stopped; the default remains 100 operations per session
 - **Multi-Instance** — Run one process per ticker from the same directory: per-ticker log and journal files, aggregated history API, and rate-limit backoff (429/418/-1003 with Retry-After) on the shared IP weight pool
 - **Server-Time Sync** — Continuously compensates local clock drift against Binance server time (min-RTT sampling), preventing `-1021` timestamp rejections on signed requests
@@ -266,6 +266,14 @@ management. Every journal record now carries `version` and `config_hash`
 so live results can be grouped by the exact build and parameter set that
 produced them.
 
+Futures reads are resilient to short network interruptions. Idempotent `GET`
+requests retry transient EOF, connection reset, and timeout failures at most
+twice with jittered backoff, clearing stale idle connections before each
+retry. The client still honors Binance `Retry-After` responses. Order and
+configuration writes are never replayed after transport failures because an
+ambiguous write may already have reached the exchange; the strategy reconciles
+exchange state before deciding what to do next.
+
 ```bash
 binance-bot -f binance-config.yml futures-trade -t BTC/USDT -a 0.002 -sl 1.0 -tp 1.5 -rp 2 -ra 3 -o 0 -d auto
 ```
@@ -312,8 +320,9 @@ Isolation guarantees:
   run only one `serve` process per port.
 - All instances behind one IP share Binance's request-weight pool. The futures
   client backs off exponentially on HTTP 429/418 and code -1003, honoring
-  `Retry-After`, but keep `refresh-interval` at 10s or higher when running
-  many instances.
+  `Retry-After`. It also retries transient transport failures on idempotent
+  reads with a bounded jittered backoff, but keep `refresh-interval` at 10s or
+  higher when running many instances.
 - Instances share the account balance: size `--amount` so the combined margin
   requirements fit the wallet, or entries will be skipped.
 
@@ -333,7 +342,7 @@ Isolation guarantees:
      binance-bot [global options] command <command args>
 
   VERSION:
-     v0.23.0
+     v0.23.1
 
   AUTHOR:
      Walter Ferreira <wferreirauy@gmail.com>
