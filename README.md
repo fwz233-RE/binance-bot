@@ -5,14 +5,14 @@
 
 ## Features
 
-- **USDT-M Futures** — `futures-trade` opens leveraged long/short positions on Binance perpetual futures with isolated/crossed margin, configurable leverage, and reduce-only exits with relentless retry. v0.21.0 adds mark-price exit pricing, an HTF trend gate for entry direction, tendency evaluation on `tendency.interval`, and a funding-rate entry filter. v0.23.0 makes the session crash-safe: startup reconciliation adopts positions the exchange already holds, the operation counter survives restarts, and shutdown closes and journals any open position
+- **USDT-M Futures** — `futures-trade` opens leveraged long/short positions on Binance perpetual futures with isolated/crossed margin, configurable leverage, and reduce-only exits with relentless retry. v0.21.0 adds mark-price exit pricing, an HTF trend gate for entry direction, tendency evaluation on `tendency.interval`, and a funding-rate entry filter. v0.23.0 makes the session crash-safe: startup reconciliation adopts positions the exchange already holds, the operation counter survives restarts, and shutdown closes and journals any open position. v0.26.1 adds bounded recovery for transient EOF, connection reset, and timeout failures on idempotent futures reads without replaying order writes
 - **24/7 Infinite Mode** — Set `--operations 0` to run continuously until manually stopped; the default remains 100 operations per session
 - **Multi-Instance** — Run one process per ticker from the same directory: per-ticker log and journal files, aggregated history API, and rate-limit backoff (429/418/-1003 with Retry-After) on the shared IP weight pool
 - **Server-Time Sync** — Continuously compensates local clock drift against Binance server time (min-RTT sampling), preventing `-1021` timestamp rejections on signed requests
 - **Auto Trade** — Automatically detects market tendency and switches between bull/bear strategies per operation; supports forced strategy mode and waits when the account cannot fund the detected side
 - **Bull Trade** — Buy-low-sell-high strategy for uptrending markets
 - **Bear Trade** — Sell-high-buy-low strategy for downtrending markets
-- **Scalp Mode** — High-frequency micro-trading using a scoring-based entry system. v0.14.0 adds pullback-in-trend RSI, anticipatory MACD with optional consecutive-bar confirmation, Bollinger price-touch + squeeze, RSI-divergence bonus, ATR regime filter, recent-extreme guard, ATR-based TP/SL, time-stop, break-even pin, and MACD-peak exit. v0.14.2 adds the MACD `min-separation` gate so entries only fire after a meaningful prior MACD/signal gap is now closing in. v0.20.0 reworks the exit state machine: bars count closed klines, unconditional `max-hold-bars` exit, post-break-even ATR trailing floor, and re-entry cooldown
+- **Scalp Mode** — High-frequency micro-trading using a scoring-based entry system. v0.14.0 adds pullback-in-trend RSI, anticipatory MACD with optional consecutive-bar confirmation, Bollinger price-touch + squeeze, RSI-divergence bonus, ATR regime filter, recent-extreme guard, ATR-based TP/SL, time-stop, break-even pin, and MACD-peak exit. v0.14.2 adds the MACD `min-separation` gate so entries only fire after a meaningful prior MACD/signal gap is now closing in. v0.20.0 reworks the exit state machine: bars count closed klines, unconditional `max-hold-bars` exit, post-break-even ATR trailing floor, and re-entry cooldown. v0.26.0 retunes the shipped scalp profile to 3-minute candles, stricter entry scoring, fee-surviving ATR targets, and tighter volatility regimes
 - **Advanced Indicators** — RSI (+ optional SMA smoothing), MACD, DEMA, Bollinger Bands (+ width-ratio for squeeze), ADX, ATR, Stochastic RSI, swing-extrema divergence, and volume confirmation
 - **Top Gainers Monitor** — Real-time TUI dashboard of the top 24h movers on Binance
 - **Rotation Scout Mode** — Scans a configured asset basket and rotates through a bridge asset when relative ratios become fee-adjusted opportunities
@@ -270,6 +270,14 @@ management. Every journal record now carries `version` and `config_hash`
 so live results can be grouped by the exact build and parameter set that
 produced them.
 
+Futures reads are resilient to short network interruptions. Idempotent `GET`
+requests retry transient EOF, connection reset, and timeout failures at most
+twice with jittered backoff, clearing stale idle connections before each
+retry. The client still honors Binance `Retry-After` responses. Order and
+configuration writes are never replayed after transport failures because an
+ambiguous write may already have reached the exchange; the strategy reconciles
+exchange state before deciding what to do next.
+
 ```bash
 binance-bot -f binance-config.yml futures-trade -t BTC/USDT -a 0.002 -sl 1.0 -tp 1.5 -rp 2 -ra 3 -o 0 -d auto
 ```
@@ -316,8 +324,9 @@ Isolation guarantees:
   run only one `serve` process per port.
 - All instances behind one IP share Binance's request-weight pool. The futures
   client backs off exponentially on HTTP 429/418 and code -1003, honoring
-  `Retry-After`, but keep `refresh-interval` at 10s or higher when running
-  many instances.
+  `Retry-After`. It also retries transient transport failures on idempotent
+  reads with a bounded jittered backoff, but keep `refresh-interval` at 10s or
+  higher when running many instances.
 - Instances share the account balance: size `--amount` so the combined margin
   requirements fit the wallet, or entries will be skipped.
 
@@ -337,7 +346,7 @@ Isolation guarantees:
      binance-bot [global options] command <command args>
 
   VERSION:
-     v0.25.0
+     v0.26.1
 
   AUTHOR:
      Walter Ferreira <wferreirauy@gmail.com>
@@ -554,6 +563,13 @@ For bull trades, the stop tracks from the highest price after activation. For be
 ### Scalp Mode
 
 Scalp mode uses a score instead of requiring all entry conditions at once. The default signals are RSI pullback-in-trend, anticipatory MACD histogram, tendency / MACD zero-line gate, Bollinger price-touch, ADX strength and volume confirmation. Optional weighted scoring boosts MACD/RSI/BB (×2) and divergence (×3) so quality signals dominate quantity.
+
+The shipped `sample-scalp-config.yml` profile is deliberately stricter from
+v0.26.0 onward: 60 candles on a 3-minute interval, 15-second polling,
+`min-score: 7`, divergence disabled, `tp-atr-multiplier: 3.2`,
+`sl-atr-multiplier: 1.6`, and an ATR regime of 0.15%–2.0%. These are profile
+choices for lower-noise, fee-aware Futures operation; unset/zero configuration
+defaults below remain backward compatible.
 
 ```yaml
 scalp-mode:

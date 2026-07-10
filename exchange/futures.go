@@ -6,14 +6,18 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math/rand"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -21,6 +25,18 @@ import (
 // futures path uses this small purpose-built client instead of a new
 // heavyweight dependency.
 const FuturesMainnetURL = "https://fapi.binance.com"
+
+const (
+	futuresRequestTimeout        = 15 * time.Second
+	futuresDialTimeout           = 5 * time.Second
+	futuresTLSHandshakeTimeout   = 5 * time.Second
+	futuresResponseHeaderTimeout = 10 * time.Second
+	futuresIdleConnTimeout       = 45 * time.Second
+	maxTransientGETRetries       = 2
+	maxGETAttempts               = 5
+	transientRetryBaseDelay      = 250 * time.Millisecond
+	transientRetryMaxDelay       = 2 * time.Second
+)
 
 // FuturesAPIKey/FuturesSecretKey fall back to the spot keys so users with
 // unified API keys need no extra setup.
@@ -40,8 +56,9 @@ func envOr(key, fallback string) string {
 // It reuses the package-level server-time offset so signed requests survive
 // local clock drift, same as the spot client.
 type FuturesClient struct {
-	baseURL string
-	http    *http.Client
+	baseURL   string
+	http      *http.Client
+	retryWait func(time.Duration)
 
 	// feeCache holds per-symbol taker rates so exit decisions can read the
 	// live commission without a REST round-trip on every loop iteration.
@@ -68,9 +85,21 @@ const feeCacheDefaultTTL = 5 * time.Minute
 // shared server-time sync loop.
 func NewFuturesClient() *FuturesClient {
 	timeSyncOnce.Do(startTimeSync)
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = (&net.Dialer{
+		Timeout:   futuresDialTimeout,
+		KeepAlive: 30 * time.Second,
+	}).DialContext
+	transport.TLSHandshakeTimeout = futuresTLSHandshakeTimeout
+	transport.ResponseHeaderTimeout = futuresResponseHeaderTimeout
+	transport.IdleConnTimeout = futuresIdleConnTimeout
+	transport.MaxIdleConns = 20
+	transport.MaxIdleConnsPerHost = 10
+
 	return &FuturesClient{
-		baseURL: FuturesMainnetURL,
-		http:    &http.Client{Timeout: 15 * time.Second},
+		baseURL:   FuturesMainnetURL,
+		http:      &http.Client{Transport: transport, Timeout: futuresRequestTimeout},
+		retryWait: time.Sleep,
 	}
 }
 
@@ -117,41 +146,85 @@ func errorsAs(err error, target **FuturesAPIError) bool {
 	return false
 }
 
-// request performs one REST call with two safety nets:
-//   - Rate limits: HTTP 429/418 and code -1003 are retried with exponential
-//     backoff honoring Retry-After, but only for idempotent GETs — order
-//     placement fails fast so the strategy layer re-evaluates instead of
-//     filling a stale signal tens of seconds later.
-//   - Timestamp rejection: code -1021 means the request was rejected before
-//     execution (cold-connection latency or clock drift), so any method is
-//     safe to retry once after forcing a server-time resync; each attempt
-//     re-signs with a fresh timestamp.
+// request adds bounded recovery around one REST attempt:
+//   - Idempotent GETs retry transient transport failures with jittered backoff
+//     after dropping idle connections that may belong to a broken route.
+//   - Rate limits honor Retry-After and retain exponential backoff.
+//   - Timestamp rejection is retried once after a best-effort clock resync.
+//
+// Non-GET requests never retry transport failures: an ambiguous order response
+// must be reconciled by the strategy instead of risking duplicate execution.
 func (c *FuturesClient) request(method, path string, params url.Values, signed bool) ([]byte, error) {
-	backoff := 2 * time.Second
+	rateLimitBackoff := 2 * time.Second
+	transientBackoff := transientRetryBaseDelay
+	transientRetries := 0
 	timestampRetried := false
-	for attempt := 0; ; attempt++ {
+
+	for attempt := 1; ; attempt++ {
 		body, err := c.attempt(method, path, params, signed)
 		if err == nil {
 			return body, nil
 		}
 		if signed && !timestampRetried && IsFuturesCode(err, -1021) {
 			timestampRetried = true
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), futuresRequestTimeout)
 			_, _ = SyncServerTime(ctx) // best-effort; retry re-signs either way
 			cancel()
 			continue
 		}
-		retryAfter, limited := rateLimitDelay(err)
-		if !limited || method != http.MethodGet || attempt >= 4 {
+		if method != http.MethodGet || attempt >= maxGETAttempts {
 			return nil, err
 		}
-		wait := backoff
-		if retryAfter > wait {
-			wait = retryAfter
+
+		if retryAfter, limited := rateLimitDelay(err); limited {
+			wait := rateLimitBackoff
+			if retryAfter > wait {
+				wait = retryAfter
+			}
+			c.wait(wait)
+			rateLimitBackoff *= 2
+			continue
 		}
-		time.Sleep(wait)
-		backoff *= 2
+		if transientRetries >= maxTransientGETRetries || !isTransientTransportError(err) {
+			return nil, err
+		}
+
+		transientRetries++
+		c.http.CloseIdleConnections()
+		c.wait(jitteredDelay(transientBackoff))
+		transientBackoff *= 2
+		if transientBackoff > transientRetryMaxDelay {
+			transientBackoff = transientRetryMaxDelay
+		}
 	}
+}
+
+func (c *FuturesClient) wait(delay time.Duration) {
+	if c.retryWait != nil {
+		c.retryWait(delay)
+		return
+	}
+	time.Sleep(delay)
+}
+
+func jitteredDelay(base time.Duration) time.Duration {
+	if base <= 0 {
+		return 0
+	}
+	return base + time.Duration(rand.Int63n(int64(base/2)+1))
+}
+
+func isTransientTransportError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, context.DeadlineExceeded) || errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.ECONNREFUSED) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary())
 }
 
 // attempt performs a single REST call. Signed requests get a fresh
